@@ -3,5 +3,4 @@ name=TEESimulator
 version=${REPLACEMEVER}
 versionCode=${REPLACEMEVERCODE}
 author=JingMatrix
-description=Software simulation for Android hardware-backed key pairs with key attestation
-updateJson=https://raw.githubusercontent.com/JingMatrix/TEESimulator/main/module/update.json
+description=完整的 TEE 模拟框架

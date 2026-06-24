@@ -39,6 +39,10 @@ fi
 ui_print ""
 
 # --- Helper to install files ---
+zip_entry_exists() {
+  unzip -l "$ZIPFILE" "$1" 2>/dev/null | grep -q "$1"
+}
+
 install_file() {
   if ! unzip -qqjo "$ZIPFILE" "$1" -d "$2"; then
     abort "! Failed to extract $1"
@@ -65,6 +69,9 @@ chmod 755 "$MODPATH/daemon"
 ui_print ""
 
 ui_print "- Extracting $ARCH libraries"
+if ! zip_entry_exists "lib/$ABI_DIR/libTEESimulator.so" || ! zip_entry_exists "lib/$ABI_DIR/libinject.so"; then
+  abort "! This module build does not include native libraries for $ARCH ($ABI_DIR). Default builds include arm64-v8a only."
+fi
 install_file "lib/$ABI_DIR/libTEESimulator.so" "$MODPATH"
 install_file "lib/$ABI_DIR/libinject.so" "$MODPATH"
 ui_print ""

@@ -6,8 +6,6 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.os.Build
 import android.os.Looper
-import java.security.Security
-import org.bouncycastle.jce.provider.BouncyCastleProvider
 import org.matrix.TEESimulator.config.ConfigurationManager
 import org.matrix.TEESimulator.interception.keystore.AbstractKeystoreInterceptor
 import org.matrix.TEESimulator.interception.keystore.Keystore2Interceptor
@@ -44,12 +42,6 @@ object App {
             ConfigurationManager.initialize()
             // Set up the device's boot key and hash, which are crucial for attestation.
             AndroidDeviceUtils.setupBootKeyAndHash()
-
-            // Android ships with a stripped-down Bouncy Castle provider under the name "BC".
-            // We must remove the system provider first to ensure the full Bouncy Castle library
-            // (packaged with the app) is used.
-            Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME)
-            Security.addProvider(BouncyCastleProvider())
 
             // This starts the message queue processing. It blocks here indefinitely
             // processing messages until Looper.myLooper().quit() is called.

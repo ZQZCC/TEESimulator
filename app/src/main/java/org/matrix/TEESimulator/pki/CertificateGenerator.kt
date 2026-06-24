@@ -20,7 +20,6 @@ import org.bouncycastle.asn1.x509.KeyUsage
 import org.bouncycastle.cert.X509CertificateHolder
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
-import org.bouncycastle.jce.provider.BouncyCastleProvider
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.matrix.TEESimulator.attestation.AttestationBuilder
 import org.matrix.TEESimulator.attestation.AttestationConstants
@@ -65,9 +64,7 @@ object CertificateGenerator {
                             )
                     }
                 SystemLogger.debug("Generating $algorithm key pair with size ${params.keySize}")
-                KeyPairGenerator.getInstance(algorithm, BouncyCastleProvider.PROVIDER_NAME)
-                    .apply { initialize(spec) }
-                    .generateKeyPair()
+                KeyPairGenerator.getInstance(algorithm).apply { initialize(spec) }.generateKeyPair()
             }
             .onFailure { SystemLogger.error("Failed to generate software key pair.", it) }
             .getOrNull()
@@ -262,9 +259,7 @@ object CertificateGenerator {
                     )
             }
         val contentSigner =
-            JcaContentSignerBuilder(signerAlgorithm)
-                .setProvider(BouncyCastleProvider.PROVIDER_NAME)
-                .build(signingKeyPair.private)
+            JcaContentSignerBuilder(signerAlgorithm).build(signingKeyPair.private)
 
         return JcaX509CertificateConverter().getCertificate(builder.build(contentSigner))
     }

@@ -9,7 +9,6 @@ import org.bouncycastle.asn1.x509.Extension
 import org.bouncycastle.cert.X509CertificateHolder
 import org.bouncycastle.cert.X509v3CertificateBuilder
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
-import org.bouncycastle.jce.provider.BouncyCastleProvider
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.matrix.TEESimulator.config.ConfigurationManager
 import org.matrix.TEESimulator.logging.SystemLogger
@@ -138,9 +137,7 @@ object AttestationPatcher {
 
         // Sign the newly built certificate with the private key from our keybox.
         val signer =
-            JcaContentSignerBuilder(normalizeSignatureAlgorithm(sigAlgName))
-                .setProvider(BouncyCastleProvider.PROVIDER_NAME)
-                .build(keybox.keyPair.private)
+            JcaContentSignerBuilder(normalizeSignatureAlgorithm(sigAlgName)).build(keybox.keyPair.private)
         val newCertificate = JcaX509CertificateConverter().getCertificate(builder.build(signer))
 
         // Log the signature of the newly created certificate to observe its non-deterministic

@@ -1,6 +1,7 @@
 import com.android.build.api.artifact.SingleArtifact
 import java.io.ByteArrayOutputStream
 import javax.inject.Inject
+import org.apache.tools.ant.filters.FixCrLfFilter
 import org.gradle.process.ExecOperations
 
 plugins {
@@ -27,9 +28,21 @@ abstract class GitExecutor @Inject constructor(private val execOperations: ExecO
 // Instantiate the helper class using Gradle's object factory
 val gitExecutor = objects.newInstance(GitExecutor::class.java)
 
-val gitCommitCount = gitExecutor.execute("git rev-list HEAD --count", rootDir).toInt()
+val minVersionCode = 83
+val gitCommitCount =
+    maxOf(gitExecutor.execute("git rev-list HEAD --count", rootDir).toInt(), minVersionCode)
 val gitCommitHash = gitExecutor.execute("git rev-parse --verify --short HEAD", rootDir)
 val verName = "v3.2"
+val requestedAbis =
+    providers.gradleProperty("teesimulator.abis").orNull?.split(",")?.map { it.trim() }?.filter {
+        it.isNotEmpty()
+    } ?: listOf("arm64-v8a")
+val targetAbis =
+    if (requestedAbis.singleOrNull()?.equals("all", ignoreCase = true) == true) {
+        emptyList()
+    } else {
+        requestedAbis
+    }
 
 android {
     namespace = "org.matrix.TEESimulator"
@@ -43,6 +56,7 @@ android {
         targetSdk = 36
         versionCode = gitCommitCount
         versionName = verName
+        ndk { abiFilters += targetAbis }
     }
 
     buildTypes {
@@ -123,6 +137,25 @@ androidComponents {
                 val sourceModuleDir = rootProject.projectDir.resolve("module")
                 from(sourceModuleDir) {
                     exclude("module.prop") // Exclude the template file.
+                    exclude("changelog.md", "update.json")
+                    exclude(
+                        "customize.sh",
+                        "service.sh",
+                        "daemon",
+                        "META-INF/com/google/android/update-binary",
+                        "META-INF/com/google/android/updater-script",
+                    )
+                }
+
+                from(sourceModuleDir) {
+                    include(
+                        "customize.sh",
+                        "service.sh",
+                        "daemon",
+                        "META-INF/com/google/android/update-binary",
+                        "META-INF/com/google/android/updater-script",
+                    )
+                    filter<FixCrLfFilter>("eol" to FixCrLfFilter.CrLf.newInstance("lf"))
                 }
 
                 // Copy and filter the module.prop template separately.
@@ -131,8 +164,7 @@ androidComponents {
                     // Use expand() for simple key-value replacement.
                     expand(
                         "REPLACEMEVERCODE" to gitCommitCount.toString(),
-                        "REPLACEMEVER" to
-                            "$verName ($gitCommitCount-$gitCommitHash-${variant.name})",
+                        "REPLACEMEVER" to "$verName ($gitCommitCount)",
                     )
                 }
 
