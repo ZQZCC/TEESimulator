@@ -11,6 +11,25 @@ data class KeyIdentifier(val uid: Int, val alias: String)
 
 /** A collection of utility functions to support binder interception. */
 object InterceptorUtils {
+    private const val EX_SERVICE_SPECIFIC = -8
+
+    private fun synthesizeServiceSpecificMessage(errorCode: Int): String =
+        when (errorCode) {
+            6 -> "Error::Rc(PERMISSION_DENIED)"
+            7 -> "Error::Rc(KEY_NOT_FOUND)"
+            else -> if (errorCode > 0) "Error::Rc($errorCode)" else "Error::Km($errorCode)"
+        }
+
+    fun createErrorReply(errorCode: Int): BinderInterceptor.TransactionResult.OverrideReply {
+        val parcel =
+            Parcel.obtain().apply {
+                writeInt(EX_SERVICE_SPECIFIC)
+                writeString(synthesizeServiceSpecificMessage(errorCode))
+                writeInt(0)
+                writeInt(errorCode)
+            }
+        return BinderInterceptor.TransactionResult.OverrideReply(parcel)
+    }
 
     /**
      * Uses reflection to get the integer transaction code for a given method name from a Stub

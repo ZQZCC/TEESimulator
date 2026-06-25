@@ -148,26 +148,41 @@ class KeyMintSecurityLevelInterceptor(
             val metadata: KeyMetadata =
                 reply.readTypedObject(KeyMetadata.CREATOR)
                     ?: return TransactionResult.SkipTransaction
-            KeyMintAttestation(
-                metadata.authorizations?.map { it.keyParameter }?.toTypedArray() ?: emptyArray()
-            )
+
+            data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
+            val keyDescriptor =
+                data.readTypedObject(KeyDescriptor.CREATOR)
+                    ?: return TransactionResult.SkipTransaction
+            val keyId = KeyIdentifier(callingUid, keyDescriptor.alias)
+
             val originalChain =
                 CertificateHelper.getCertificateChain(metadata)
-                    ?: return TransactionResult.SkipTransaction
+            if (originalChain == null || originalChain.size <= 1) {
+                cleanupKeyData(keyId)
+                teeResponses[keyId] =
+                    KeyEntryResponse().apply {
+                        this.metadata = metadata
+                        iSecurityLevel = original
+                    }
+                return TransactionResult.SkipTransaction
+            }
+
             if (originalChain.size > 1) {
                 val newChain = AttestationPatcher.patchCertificateChain(originalChain, callingUid)
 
                 // Cache the newly patched chain to ensure consistency across subsequent API calls.
-                data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
-                val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)!!
                 val key = metadata.key!!
-                val keyId = KeyIdentifier(callingUid, keyDescriptor.alias)
                 CertificateHelper.updateCertificateChain(callingUid, metadata, newChain)
                     .getOrThrow()
 
                 // We must clean up cached generated keys before storing the patched chain
                 cleanupKeyData(keyId)
                 patchedChains[keyId] = newChain
+                teeResponses[keyId] =
+                    KeyEntryResponse().apply {
+                        this.metadata = metadata
+                        iSecurityLevel = original
+                    }
                 SystemLogger.debug(
                     "Cached patched certificate chain for $keyId. (${key.alias} [${key.domain}, ${key.nspace}])"
                 )
@@ -238,14 +253,14 @@ class KeyMintSecurityLevelInterceptor(
                 val params = data.createTypedArray(KeyParameter.CREATOR)!!
                 val parsedParams = KeyMintAttestation(params)
                 val isAttestKeyRequest = parsedParams.isAttestKey()
+                val keyId = KeyIdentifier(callingUid, keyDescriptor.alias)
 
                 // Determine if we need to generate a key based on config or
                 // if it's an attestation request in patch mode.
                 val needsSoftwareGeneration =
                     ConfigurationManager.shouldGenerate(callingUid) ||
                         (ConfigurationManager.shouldPatch(callingUid) && isAttestKeyRequest) ||
-                        (attestationKey != null &&
-                            isAttestationKey(KeyIdentifier(callingUid, attestationKey.alias)))
+                        attestationKey != null
 
                 if (needsSoftwareGeneration) {
                     keyDescriptor.nspace = secureRandom.nextLong()
@@ -263,7 +278,6 @@ class KeyMintSecurityLevelInterceptor(
                             securityLevel,
                         ) ?: throw Exception("CertificateGenerator failed to create key pair.")
 
-                    val keyId = KeyIdentifier(callingUid, keyDescriptor.alias)
                     // It is unnecessary but a good practice to clean up possible caches
                     cleanupKeyData(keyId)
                     // Store the generated key data.
@@ -283,7 +297,8 @@ class KeyMintSecurityLevelInterceptor(
                 } else if (parsedParams.attestationChallenge != null) {
                     TransactionResult.Continue
                 } else {
-                    TransactionResult.ContinueAndSkipPost
+                    cleanupKeyData(keyId)
+                    TransactionResult.Continue
                 }
             }
             .getOrElse {
@@ -350,6 +365,8 @@ class KeyMintSecurityLevelInterceptor(
 
         // Stores keys generated entirely in software.
         val generatedKeys = ConcurrentHashMap<KeyIdentifier, GeneratedKeyInfo>()
+        // Stores patched hardware KeyEntryResponse objects for coherent grant/KEY_ID readback.
+        val teeResponses = ConcurrentHashMap<KeyIdentifier, KeyEntryResponse>()
         // A set to quickly identify keys that were generated for attestation purposes.
         val attestationKeys = ConcurrentHashMap.newKeySet<KeyIdentifier>()
         // Caches patched certificate chains to prevent re-generation and signature inconsistencies.
@@ -357,9 +374,54 @@ class KeyMintSecurityLevelInterceptor(
         // Stores interceptors for active cryptographic operations.
         private val interceptedOperations = ConcurrentHashMap<IBinder, OperationInterceptor>()
 
+        data class SoftwareGrant(
+            val ownerKeyId: KeyIdentifier,
+            val granteeUid: Int,
+            val accessVector: Int,
+        )
+
+        val softwareGrants = ConcurrentHashMap<Long, SoftwareGrant>()
+
+        fun issueGrant(ownerKeyId: KeyIdentifier, granteeUid: Int, accessVector: Int): Long {
+            softwareGrants.entries
+                .firstOrNull {
+                    it.value.ownerKeyId == ownerKeyId && it.value.granteeUid == granteeUid
+                }
+                ?.let { existing ->
+                    softwareGrants[existing.key] = existing.value.copy(accessVector = accessVector)
+                    return existing.key
+                }
+
+            var id = secureRandom.nextLong()
+            while (id == 0L || id == -1L || softwareGrants.containsKey(id)) {
+                id = secureRandom.nextLong()
+            }
+            softwareGrants[id] = SoftwareGrant(ownerKeyId, granteeUid, accessVector)
+            return id
+        }
+
+        fun resolveGrant(grantId: Long, callerUid: Int): SoftwareGrant? =
+            softwareGrants[grantId]?.takeIf {
+                it.granteeUid == callerUid && ownsKeyResponse(it.ownerKeyId)
+            }
+
+        fun ownsKeyResponse(keyId: KeyIdentifier): Boolean = getGeneratedKeyResponse(keyId) != null
+
+        fun revokeGrant(ownerKeyId: KeyIdentifier, granteeUid: Int) {
+            softwareGrants.entries
+                .filter { it.value.ownerKeyId == ownerKeyId && it.value.granteeUid == granteeUid }
+                .forEach { softwareGrants.remove(it.key) }
+        }
+
+        private fun purgeGrantsForKey(ownerKeyId: KeyIdentifier) {
+            softwareGrants.entries
+                .filter { it.value.ownerKeyId == ownerKeyId }
+                .forEach { softwareGrants.remove(it.key) }
+        }
+
         // --- Public Accessors for Other Interceptors ---
         fun getGeneratedKeyResponse(keyId: KeyIdentifier): KeyEntryResponse? =
-            generatedKeys[keyId]?.response
+            generatedKeys[keyId]?.response ?: teeResponses[keyId]
 
         /**
          * Finds a software-generated key by first filtering all known keys by the caller's UID, and
@@ -379,14 +441,37 @@ class KeyMintSecurityLevelInterceptor(
                 ?.value
         }
 
+        fun findTeeResponseByKeyId(callingUid: Int, nspace: Long?): KeyEntryResponse? {
+            if (nspace == null || nspace == 0L) return null
+            return teeResponses.entries
+                .filter { (keyIdentifier, _) -> keyIdentifier.uid == callingUid }
+                .find { (_, response) -> response.metadata?.key?.nspace == nspace }
+                ?.value
+        }
+
+        fun evictTeeResponse(keyId: KeyIdentifier) {
+            teeResponses.remove(keyId)
+            patchedChains.remove(keyId)
+        }
+
+        fun evictTeeResponseByKeyId(callingUid: Int, nspace: Long?) {
+            if (nspace == null || nspace == 0L) return
+            teeResponses.entries
+                .filter { (keyIdentifier, _) -> keyIdentifier.uid == callingUid }
+                .find { (_, response) -> response.metadata?.key?.nspace == nspace }
+                ?.let { evictTeeResponse(it.key) }
+        }
+
         fun getPatchedChain(keyId: KeyIdentifier): Array<Certificate>? = patchedChains[keyId]
 
         fun isAttestationKey(keyId: KeyIdentifier): Boolean = attestationKeys.contains(keyId)
 
         fun cleanupKeyData(keyId: KeyIdentifier) {
+            purgeGrantsForKey(keyId)
             if (generatedKeys.remove(keyId) != null) {
                 SystemLogger.debug("Remove generated key ${keyId}")
             }
+            teeResponses.remove(keyId)
             if (patchedChains.remove(keyId) != null) {
                 SystemLogger.debug("Remove patched chain for ${keyId}")
             }
@@ -409,8 +494,10 @@ class KeyMintSecurityLevelInterceptor(
             val count = generatedKeys.size
             val reasonMessage = reason?.let { " due to $it" } ?: ""
             generatedKeys.clear()
+            teeResponses.clear()
             patchedChains.clear()
             attestationKeys.clear()
+            softwareGrants.clear()
             SystemLogger.info("Cleared all cached keys ($count entries)$reasonMessage.")
         }
     }
