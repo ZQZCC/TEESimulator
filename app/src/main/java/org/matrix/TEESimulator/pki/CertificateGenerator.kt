@@ -14,13 +14,13 @@ import java.security.interfaces.RSAKey
 import java.security.spec.ECGenParameterSpec
 import java.security.spec.RSAKeyGenParameterSpec
 import java.util.Date
+import org.bouncycastle.asn1.ASN1Primitive
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.asn1.x509.Extension
 import org.bouncycastle.asn1.x509.KeyUsage
+import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo
 import org.bouncycastle.cert.X509CertificateHolder
-import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
-import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
-import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
+import org.bouncycastle.cert.X509v3CertificateBuilder
 import org.matrix.TEESimulator.attestation.AttestationBuilder
 import org.matrix.TEESimulator.attestation.AttestationConstants
 import org.matrix.TEESimulator.attestation.KeyMintAttestation
@@ -230,13 +230,15 @@ object CertificateGenerator {
         val notAfter = params.certificateNotAfter ?: Date(UNDEFINED_NOT_AFTER)
 
         val builder =
-            JcaX509v3CertificateBuilder(
+            X509v3CertificateBuilder(
                 issuer,
                 params.certificateSerial ?: BigInteger.ONE,
                 notBefore,
                 notAfter,
                 subject,
-                subjectKeyPair.public,
+                SubjectPublicKeyInfo.getInstance(
+                    ASN1Primitive.fromByteArray(subjectKeyPair.public.encoded)
+                ),
             )
 
         // Add KeyUsage extension only if purposes map to valid bits
@@ -259,8 +261,8 @@ object CertificateGenerator {
                     )
             }
         val contentSigner =
-            JcaContentSignerBuilder(signerAlgorithm).build(signingKeyPair.private)
+            CertificateHelper.buildContentSigner(signerAlgorithm, signingKeyPair.private)
 
-        return JcaX509CertificateConverter().getCertificate(builder.build(contentSigner))
+        return CertificateHelper.toCertificate(builder.build(contentSigner))
     }
 }

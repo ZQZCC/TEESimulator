@@ -6,7 +6,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-exceptions")
 foreach(config RELEASE RELWITHDEBINFO MINSIZEREL)
-    string(APPEND CMAKE_CXX_FLAGS_${config} " -O3 -flto=full")
+    string(APPEND CMAKE_CXX_FLAGS_${config} " -O3 -flto=full -DLOG_DISABLED")
+    string(APPEND CMAKE_C_FLAGS_${config} " -DLOG_DISABLED")
     string(APPEND CMAKE_SHARED_LINKER_FLAGS_${config}
            " -flto=full -Wl,-O3 -Wl,--gc-sections -Wl,--icf=all -Wl,--as-needed -Wl,--build-id=none -Wl,--no-eh-frame-hdr")
     string(APPEND CMAKE_EXE_LINKER_FLAGS_${config}

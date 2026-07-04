@@ -8,10 +8,9 @@ import org.bouncycastle.asn1.*
 import org.bouncycastle.asn1.x509.Extension
 import org.bouncycastle.cert.X509CertificateHolder
 import org.bouncycastle.cert.X509v3CertificateBuilder
-import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
-import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.matrix.TEESimulator.config.ConfigurationManager
 import org.matrix.TEESimulator.logging.SystemLogger
+import org.matrix.TEESimulator.pki.CertificateHelper
 import org.matrix.TEESimulator.pki.KeyBox
 import org.matrix.TEESimulator.pki.KeyBoxManager
 import org.matrix.TEESimulator.util.toHex
@@ -83,16 +82,6 @@ object AttestationPatcher {
     }
 
     /**
-     * Helper to normalize algorithm names for Bouncy Castle. Old Android versions might reports
-     * "SHA256WITHECDSA", but Bouncy Castle expects "SHA256withECDSA".
-     */
-    private fun normalizeSignatureAlgorithm(algoName: String): String {
-        // 1. Force uppercase to handle "sha256withecdsa"
-        // 2. Replace "WITH" with "with" to satisfy Bouncy Castle's naming convention
-        return algoName.uppercase().replace("WITH", "with")
-    }
-
-    /**
      * Creates a new leaf certificate with a modified attestation extension.
      *
      * @param originalLeafHolder A Bouncy Castle holder for the original leaf certificate.
@@ -137,12 +126,12 @@ object AttestationPatcher {
 
         // Sign the newly built certificate with the private key from our keybox.
         val signer =
-            JcaContentSignerBuilder(normalizeSignatureAlgorithm(sigAlgName)).build(keybox.keyPair.private)
-        val newCertificate = JcaX509CertificateConverter().getCertificate(builder.build(signer))
+            CertificateHelper.buildContentSigner(sigAlgName, keybox.keyPair.private)
+        val newCertificate = CertificateHelper.toCertificate(builder.build(signer))
 
         // Log the signature of the newly created certificate to observe its non-deterministic
         // nature.
-        val signatureBytes = (newCertificate as X509Certificate).signature
+        val signatureBytes = newCertificate.signature
         SystemLogger.verbose("Signature of patched leaf cert: ${signatureBytes.toHex()}")
 
         return newCertificate

@@ -169,10 +169,6 @@ object KeyBoxManager {
                                             keyPem != null &&
                                             currentCertificatePems.isNotEmpty()
                                     ) {
-                                        val keyPair =
-                                            (CertificateHelper.parsePemKeyPair(keyPem)
-                                                    as CertificateHelper.OperationResult.Success)
-                                                .data
                                         val certificates =
                                             currentCertificatePems.map {
                                                 (CertificateHelper.parsePemCertificate(it)
@@ -180,6 +176,13 @@ object KeyBoxManager {
                                                         CertificateHelper.OperationResult.Success)
                                                     .data
                                             }
+                                        val keyPair =
+                                            (CertificateHelper.parsePemKeyPair(
+                                                    keyPem,
+                                                    certificates.first().publicKey,
+                                                )
+                                                    as CertificateHelper.OperationResult.Success)
+                                                .data
 
                                         // Derive the TRUE algorithm from the key object itself.
                                         // This is our source of truth.
