@@ -46,6 +46,23 @@ object ConfigurationManager {
     // Cache for UID to package name resolution.
     private val uidToPackagesCache = ConcurrentHashMap<Int, Array<String>>()
 
+    private fun parseSectionName(line: String, requireXml: Boolean = false): String? {
+        if (line.length < 3 || line[0] != '[' || line[line.lastIndex] != ']') return null
+        val name = line.substring(1, line.lastIndex)
+        if (name.isEmpty()) return null
+        if (requireXml && !name.endsWith(".xml")) return null
+        return if (name.all { isSectionNameChar(it) }) name else null
+    }
+
+    private fun isSectionNameChar(char: Char): Boolean {
+        return char in 'a'..'z' ||
+            char in 'A'..'Z' ||
+            char in '0'..'9' ||
+            char == '_' ||
+            char == '.' ||
+            char == '-'
+    }
+
     /**
      * Initializes the configuration manager by loading all settings from disk and starting the file
      * observer to watch for changes.
@@ -144,7 +161,6 @@ object ConfigurationManager {
         val newModes = mutableMapOf<String, Mode>()
         val newKeyboxes = mutableMapOf<String, String>()
         var currentKeybox = DEFAULT_KEYBOX_FILE
-        val keyboxRegex = Regex("^\\[([a-zA-Z0-9_.-]+\\.xml)]$")
 
         try {
             file.readLines().forEach { line ->
@@ -152,8 +168,8 @@ object ConfigurationManager {
                 if (trimmedLine.isEmpty() || trimmedLine.startsWith("#")) return@forEach
 
                 // Check if the line defines a new keybox scope.
-                keyboxRegex.find(trimmedLine)?.let {
-                    currentKeybox = it.groupValues[1]
+                parseSectionName(trimmedLine, requireXml = true)?.let {
+                    currentKeybox = it
                     SystemLogger.info("Switching to keybox context: $currentKeybox")
                     return@forEach
                 }
@@ -204,14 +220,13 @@ object ConfigurationManager {
             val newPackageLevels = mutableMapOf<String, CustomPatchLevel>()
             var currentContext = "" // Empty string for global context
             val contextLines = mutableMapOf<String, MutableList<String>>()
-            val contextRegex = Regex("^\\[([a-zA-Z0-9_.-]+)]$")
 
             // First pass: group lines by context (global or package-specific).
             file.readLines().forEach { line ->
                 val trimmedLine = line.trim()
                 if (trimmedLine.isEmpty() || trimmedLine.startsWith("#")) return@forEach
 
-                contextRegex.find(trimmedLine)?.let { currentContext = it.groupValues[1] }
+                parseSectionName(trimmedLine)?.let { currentContext = it }
                     ?: run {
                         contextLines
                             .computeIfAbsent(currentContext) { mutableListOf() }

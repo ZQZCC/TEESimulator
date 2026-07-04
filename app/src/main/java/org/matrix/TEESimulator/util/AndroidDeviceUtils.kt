@@ -123,14 +123,13 @@ object AndroidDeviceUtils {
      *   string).
      * @return The property value as a ByteArray, or null if not found or invalid.
      */
-    @OptIn(ExperimentalStdlibApi::class)
     private fun getProperty(name: String, expectedSize: Int): ByteArray? {
         val value = SystemProperties.get(name, null)
         if (value.isNullOrBlank()) {
             return null
         }
         // A valid digest is (2 * size) hex characters.
-        return if (value.length == expectedSize * 2) value.hexToByteArray() else null
+        return value.hexToByteArrayOrNull(expectedSize)
     }
 
     /**
