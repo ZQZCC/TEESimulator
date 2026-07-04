@@ -1,14 +1,14 @@
 #pragma once
 
 #include <algorithm> // For std::swap in UniqueFd
+#include <cstdint>
 #include <limits.h>  // For PATH_MAX
 #include <string>
 #include <string_view>
 #include <sys/ptrace.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <vector>
-
-#include "lsplt.hpp"
 
 // Macros for syscall error checking. These are typically used after remote
 // syscall emulation.
@@ -90,22 +90,35 @@ bool set_regs(int pid, struct user_regs_struct &regs);
 
 // --- Module and Symbol Resolution ---
 
+struct MapInfo {
+    uintptr_t start;
+    uintptr_t end;
+    uint8_t perms;
+    bool is_private;
+    uintptr_t offset;
+    dev_t dev;
+    ino_t inode;
+    std::string path;
+};
+
+std::vector<MapInfo> scan_maps(std::string_view pid = "self");
+
 /**
  * @brief Gets a descriptive string of the memory region containing a given
  * address.
- * @param map_info A vector of `lsplt::MapInfo` for the process.
+ * @param map_info A vector of memory maps for the process.
  * @param addr The address to look up.
  * @return A string representing the memory region (e.g., "path perms"), or "<unknown>".
  */
-std::string get_addr_mem_region(const std::vector<lsplt::MapInfo> &map_info, uintptr_t addr);
+std::string get_addr_mem_region(const std::vector<MapInfo> &map_info, uintptr_t addr);
 
 /**
  * @brief Finds the base address of a module in a process's memory map.
- * @param map_info A vector of `lsplt::MapInfo` for the process.
+ * @param map_info A vector of memory maps for the process.
  * @param module_suffix The suffix of the module path (e.g., "libc.so").
  * @return The base address of the module, or nullptr if not found.
  */
-void *find_module_base(const std::vector<lsplt::MapInfo> &map_info, std::string_view module_suffix);
+void *find_module_base(const std::vector<MapInfo> &map_info, std::string_view module_suffix);
 
 /**
  * @brief Finds the address of a function in a remote process by resolving it
@@ -120,8 +133,8 @@ void *find_module_base(const std::vector<lsplt::MapInfo> &map_info, std::string_
  * @param function_name The name of the function (e.g., "open").
  * @return The remote address of the function, or nullptr if not found.
  */
-void *find_func_addr(const std::vector<lsplt::MapInfo> &local_map_info,
-                     const std::vector<lsplt::MapInfo> &remote_map_info, std::string_view module_name,
+void *find_func_addr(const std::vector<MapInfo> &local_map_info,
+                     const std::vector<MapInfo> &remote_map_info, std::string_view module_name,
                      std::string_view function_name);
 
 /**
@@ -131,11 +144,11 @@ void *find_func_addr(const std::vector<lsplt::MapInfo> &local_map_info,
  * This typically looks for a non-executable segment of the module to return to,
  * as `PTRACE_CONT` will resume execution at the specified instruction pointer.
  *
- * @param map_info A vector of `lsplt::MapInfo` for the remote process.
+ * @param map_info A vector of memory maps for the remote process.
  * @param module_suffix The suffix of the module path (e.g., "libc.so").
  * @return A pointer to a suitable return address, or nullptr if not found.
  */
-void *find_module_return_addr(const std::vector<lsplt::MapInfo> &map_info, std::string_view module_suffix);
+void *find_module_return_addr(const std::vector<MapInfo> &map_info, std::string_view module_suffix);
 
 // --- Remote Stack Manipulation ---
 

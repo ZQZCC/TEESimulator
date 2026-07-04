@@ -16,12 +16,13 @@
 #include <sys/xattr.h>
 #include <unistd.h>
 
+#include <array>
+#include <cctype>
 #include <cinttypes>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <random>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -322,12 +323,65 @@ bool set_regs(int pid, struct user_regs_struct &regs) {
 
 /**
  * @brief Gets a descriptive string of the memory region containing a given address.
- * @param map_info A vector of `lsplt::MapInfo` for the process.
+ * @param map_info A vector of memory maps for the process.
  * @param addr The address to look up.
  * @return A string representing the memory region (e.g., "path perms"), or
  * "<unknown>".
  */
-std::string get_addr_mem_region(const std::vector<lsplt::MapInfo> &map_info, uintptr_t addr) {
+std::vector<MapInfo> scan_maps(std::string_view pid) {
+    constexpr size_t kPermLength = 5;
+    constexpr int kMapEntryFields = 7;
+
+    std::vector<MapInfo> info;
+    std::string path = "/proc/" + std::string(pid) + "/maps";
+    FILE *maps = fopen(path.c_str(), "r");
+    if (!maps) {
+        return info;
+    }
+
+    char *line = nullptr;
+    size_t len = 0;
+    ssize_t read = 0;
+    while ((read = getline(&line, &len, maps)) > 0) {
+        if (line[read - 1] == '\n') {
+            line[read - 1] = '\0';
+        }
+
+        uintptr_t start = 0;
+        uintptr_t end = 0;
+        uintptr_t offset = 0;
+        ino_t inode = 0;
+        unsigned int dev_major = 0;
+        unsigned int dev_minor = 0;
+        std::array<char, kPermLength> perm{'\0'};
+        int path_offset = 0;
+        if (sscanf(line, "%" PRIxPTR "-%" PRIxPTR " %4s %" PRIxPTR " %x:%x %lu %n%*s", &start, &end,
+                   perm.data(), &offset, &dev_major, &dev_minor, &inode, &path_offset) != kMapEntryFields) {
+            continue;
+        }
+        while (path_offset < read && std::isspace(static_cast<unsigned char>(line[path_offset]))) {
+            path_offset++;
+        }
+
+        auto &map = info.emplace_back(start, end, 0, perm[3] == 'p', offset,
+                                      static_cast<dev_t>(makedev(dev_major, dev_minor)), inode, line + path_offset);
+        if (perm[0] == kReadPerm) {
+            map.perms |= PROT_READ;
+        }
+        if (perm[1] == kWritePerm) {
+            map.perms |= PROT_WRITE;
+        }
+        if (perm[2] == kExecPerm) {
+            map.perms |= PROT_EXEC;
+        }
+    }
+
+    free(line);
+    fclose(maps);
+    return info;
+}
+
+std::string get_addr_mem_region(const std::vector<MapInfo> &map_info, uintptr_t addr) {
     for (const auto &map : map_info) {
         if (map.start <= addr && map.end > addr) {
             std::string perms_str;
@@ -349,11 +403,11 @@ std::string get_addr_mem_region(const std::vector<lsplt::MapInfo> &map_info, uin
  * This function iterates through memory maps and identifies the entry
  * that corresponds to the start of a shared library (offset 0) with a matching suffix.
  *
- * @param map_info A vector of `lsplt::MapInfo` for the process.
+ * @param map_info A vector of memory maps for the process.
  * @param module_suffix The suffix of the module path (e.g., "libc.so").
  * @return The base address of the module, or nullptr if not found.
  */
-void *find_module_base(const std::vector<lsplt::MapInfo> &map_info, std::string_view module_suffix) {
+void *find_module_base(const std::vector<MapInfo> &map_info, std::string_view module_suffix) {
     for (const auto &map : map_info) {
         // A module's base is typically its first segment with offset 0.
         if (map.offset == 0 && map.path.ends_with(module_suffix)) {
@@ -383,8 +437,8 @@ void *find_module_base(const std::vector<lsplt::MapInfo> &map_info, std::string_
  * @param function_name The name of the function (e.g., "open").
  * @return The remote address of the function, or nullptr if not found.
  */
-void *find_func_addr(const std::vector<lsplt::MapInfo> &local_map_info,
-                     const std::vector<lsplt::MapInfo> &remote_map_info, std::string_view module_name,
+void *find_func_addr(const std::vector<MapInfo> &local_map_info,
+                     const std::vector<MapInfo> &remote_map_info, std::string_view module_name,
                      std::string_view function_name) {
     LOGV("Resolving function '%.*s' in module '%.*s'.", static_cast<int>(function_name.length()), function_name.data(),
          static_cast<int>(module_name.length()), module_name.data());
@@ -912,11 +966,11 @@ std::string get_program(int pid) {
  * A non-executable segment within a common library like `libc.so` is often chosen
  * because it's guaranteed to exist and typically won't trigger unwanted execution.
  *
- * @param map_info A vector of `lsplt::MapInfo` for the remote process.
+ * @param map_info A vector of memory maps for the remote process.
  * @param module_suffix The suffix of the module path (e.g., "libc.so").
  * @return A pointer to a suitable return address, or nullptr if not found.
  */
-void *find_module_return_addr(const std::vector<lsplt::MapInfo> &map_info, std::string_view module_suffix) {
+void *find_module_return_addr(const std::vector<MapInfo> &map_info, std::string_view module_suffix) {
     for (const auto &map : map_info) {
         // Look for a readable, non-executable segment of the module.
         // This is a common heuristic for finding a safe return address for ptrace.
@@ -935,8 +989,6 @@ void *find_module_return_addr(const std::vector<lsplt::MapInfo> &map_info, std::
 /**
  * @brief Generates a random alphanumeric string of a specified length.
  *
- * Uses `std::random_device` for seeding and `std::mt19937` for pseudo-random number generation.
- *
  * @param length The desired length of the magic string.
  * @return The generated magic string.
  */
@@ -946,16 +998,11 @@ std::string generateMagic(size_t length) {
         return "";
     }
 
-    // Seed the random number generator using a hardware-entropy source if available.
-    std::mt19937 random_generator{std::random_device{}()};
-    // Distribution to pick a random character from kRandomChars.
-    std::uniform_int_distribution<size_t> char_distribution(0, kRandomChars.length() - 1);
-
     std::string magic_string;
     magic_string.reserve(length); // Reserve memory to avoid reallocations.
 
     for (size_t i = 0; i < length; i++) {
-        magic_string += kRandomChars[char_distribution(random_generator)];
+        magic_string += kRandomChars[arc4random_uniform(kRandomChars.length())];
     }
 
     LOGV("Generated magic string of length %zu.", length);

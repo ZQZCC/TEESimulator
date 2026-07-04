@@ -6,8 +6,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-exceptions")
 foreach(config RELEASE RELWITHDEBINFO MINSIZEREL)
-    string(APPEND CMAKE_CXX_FLAGS_${config} " -O3 -flto=full -DLOG_DISABLED")
-    string(APPEND CMAKE_C_FLAGS_${config} " -DLOG_DISABLED")
+    string(APPEND CMAKE_CXX_FLAGS_${config} " -O3 -flto=full -DLOG_DISABLED -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident")
+    string(APPEND CMAKE_C_FLAGS_${config} " -DLOG_DISABLED -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident")
     string(APPEND CMAKE_SHARED_LINKER_FLAGS_${config}
            " -flto=full -Wl,-O3 -Wl,--gc-sections -Wl,--icf=all -Wl,--as-needed -Wl,--build-id=none -Wl,--no-eh-frame-hdr")
     string(APPEND CMAKE_EXE_LINKER_FLAGS_${config}
@@ -28,9 +28,11 @@ target_link_libraries(binder PRIVATE utils)
 
 add_executable(libinject.so inject/main.cpp inject/utils.cpp)
 target_include_directories(libinject.so PUBLIC include)
-target_link_libraries(libinject.so PRIVATE lsplt_static)
+target_link_libraries(libinject.so PRIVATE dl log)
 
 add_library(${CMAKE_PROJECT_NAME} SHARED binder_interceptor.cpp)
 target_include_directories(${CMAKE_PROJECT_NAME} PUBLIC external/linux-kernel/include include)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE binder lsplt_static utils)
+set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
+        LINK_FLAGS "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports.map")
 

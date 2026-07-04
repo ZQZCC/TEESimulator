@@ -14,17 +14,17 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <array>
+#include <cerrno>
 #include <climits>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "logging.hpp" // Custom logging utilities
-#include "lsplt.hpp"   // Library for scanning memory maps
 #include "utils.hpp"   // Utility functions for ptrace, remote memory, etc.
 
 using namespace std::string_literals;
@@ -46,7 +46,7 @@ using namespace std::string_literals;
 |                      | 2. GET/SET REGS: Save and restore        |
 |                      v    the target's CPU registers.           |
 |  +-----------------------------------------------------------+  |
-|  |           Memory Map Scanning (lsplt::MapInfo)            |  |
+|  |           Memory Map Scanning (/proc/<pid>/maps)          |  |
 |  +-----------------------------------------------------------+  |
 |                      ^                                          |
 |                      | 3. Scan Maps: Identify module bases      |
@@ -145,8 +145,8 @@ public:
         }
 
         // Scan maps to find the remote 'close' function address.
-        std::vector<lsplt::MapInfo> local_map = lsplt::MapInfo::Scan();
-        std::vector<lsplt::MapInfo> remote_map = lsplt::MapInfo::Scan(std::to_string(pid_));
+        std::vector<MapInfo> local_map = scan_maps();
+        std::vector<MapInfo> remote_map = scan_maps(std::to_string(pid_));
 
         if (auto close_addr = find_func_addr(local_map, remote_map, constants::kLibcModule, "close")) {
             std::vector<uintptr_t> args = {static_cast<uintptr_t>(fd_)};
@@ -226,8 +226,8 @@ private:
  *  remote process, or std::nullopt if the transfer fails.
  */
 static std::optional<int> transfer_fd_to_remote(int pid, const char *lib_path, struct user_regs_struct &regs,
-                                                const std::vector<lsplt::MapInfo> &local_map,
-                                                const std::vector<lsplt::MapInfo> &remote_map,
+                                                const std::vector<MapInfo> &local_map,
+                                                const std::vector<MapInfo> &remote_map,
                                                 uintptr_t libc_return_addr) {
     LOGD("Attempting to transfer file descriptor for library: %s", lib_path);
 
@@ -445,8 +445,8 @@ static std::optional<int> transfer_fd_to_remote(int pid, const char *lib_path, s
  * @return The error string from remote dlerror, or an explanatory message if retrieval fails.
  */
 static std::string get_remote_dlerror(int pid, struct user_regs_struct &regs,
-                                      const std::vector<lsplt::MapInfo> &local_map,
-                                      const std::vector<lsplt::MapInfo> &remote_map, uintptr_t libc_return_addr) {
+                                      const std::vector<MapInfo> &local_map,
+                                      const std::vector<MapInfo> &remote_map, uintptr_t libc_return_addr) {
     auto dlerror_addr = find_func_addr(local_map, remote_map, constants::kLibdlModule, "dlerror");
     if (!dlerror_addr) {
         return "Failed to find dlerror function in remote libdl.";
@@ -500,8 +500,8 @@ static std::string get_remote_dlerror(int pid, struct user_regs_struct &regs,
  * @return An optional uintptr_t containing the handle to the loaded library, or std::nullopt if loading fails.
  */
 static std::optional<uintptr_t> remote_dlopen(int pid, struct user_regs_struct &regs,
-                                              const std::vector<lsplt::MapInfo> &local_map,
-                                              const std::vector<lsplt::MapInfo> &remote_map, int lib_fd,
+                                              const std::vector<MapInfo> &local_map,
+                                              const std::vector<MapInfo> &remote_map, int lib_fd,
                                               const char *lib_path, uintptr_t libc_return_addr) {
     LOGD("Attempting remote dlopen for library: %s with FD: %d", lib_path, lib_fd);
 
@@ -566,8 +566,8 @@ static std::optional<uintptr_t> remote_dlopen(int pid, struct user_regs_struct &
  *  or std::nullopt if the symbol is not found.
  */
 static std::optional<uintptr_t> remote_find_entry(int pid, struct user_regs_struct &regs, const char *entry_name,
-                                                  const std::vector<lsplt::MapInfo> &local_map,
-                                                  const std::vector<lsplt::MapInfo> &remote_map,
+                                                  const std::vector<MapInfo> &local_map,
+                                                  const std::vector<MapInfo> &remote_map,
                                                   uintptr_t remote_handle, uintptr_t libc_return_addr) {
     LOGD("Attempting to find remote entry symbol '%s' in library handle %p.", entry_name,
          reinterpret_cast<void *>(remote_handle));
@@ -662,20 +662,47 @@ private:
  * @return True on success, false on failure.
  */
 static bool copy_file(const char* src, const char* dst) {
-    std::ifstream src_file(src, std::ios::binary);
-    std::ofstream dst_file(dst, std::ios::binary);
-
-    if (!src_file) {
+    UniqueFd src_fd = open(src, O_RDONLY | O_CLOEXEC);
+    if (src_fd == -1) {
         PLOGE("Failed to open source file for copying: %s", src);
         return false;
     }
-    if (!dst_file) {
+
+    UniqueFd dst_fd = open(dst, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (dst_fd == -1) {
         PLOGE("Failed to open destination file for copying: %s", dst);
         return false;
     }
 
-    dst_file << src_file.rdbuf();
-    return src_file.good() && dst_file.good();
+    std::array<char, 16384> buffer{};
+    for (;;) {
+        ssize_t read_bytes = read(src_fd, buffer.data(), buffer.size());
+        if (read_bytes == 0) {
+            return true;
+        }
+        if (read_bytes < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            PLOGE("Failed to read source file while copying: %s", src);
+            return false;
+        }
+
+        char *cursor = buffer.data();
+        ssize_t remaining = read_bytes;
+        while (remaining > 0) {
+            ssize_t written = write(dst_fd, cursor, remaining);
+            if (written < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                PLOGE("Failed to write destination file while copying: %s", dst);
+                return false;
+            }
+            cursor += written;
+            remaining -= written;
+        }
+    }
 }
 
 /**
@@ -695,8 +722,8 @@ static bool copy_file(const char* src, const char* dst) {
  * @return The handle of the loaded library, or std::nullopt on failure.
  */
 static std::optional<uintptr_t> inject_via_staging(int pid, struct user_regs_struct &regs,
-                                                   const std::vector<lsplt::MapInfo> &local_map,
-                                                   const std::vector<lsplt::MapInfo> &remote_map,
+                                                   const std::vector<MapInfo> &local_map,
+                                                   const std::vector<MapInfo> &remote_map,
                                                    const char *lib_path, uintptr_t libc_return_addr) {
     LOGI("Initiating Staging Fallback mechanism...");
 
@@ -883,8 +910,8 @@ bool inject_library(int pid, const char *lib_path, const char *entry_name) {
     {
         // 4. Scan local and remote memory maps to resolve function addresses.
         LOGD("Scanning memory maps for target process %d...", pid);
-        std::vector<lsplt::MapInfo> remote_map = lsplt::MapInfo::Scan(std::to_string(pid));
-        std::vector<lsplt::MapInfo> local_map = lsplt::MapInfo::Scan();
+        std::vector<MapInfo> remote_map = scan_maps(std::to_string(pid));
+        std::vector<MapInfo> local_map = scan_maps();
         LOGD("Memory maps scanned.");
 
         // 5. Find a suitable return address within libc.so for remote calls.
