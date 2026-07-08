@@ -58,6 +58,8 @@ object Keystore2Interceptor : AbstractKeystoreInterceptor() {
 
     private const val RESPONSE_PERMISSION_DENIED = 6
     private const val RESPONSE_KEY_NOT_FOUND = 7
+    private const val KEY_PERMISSION_GET_INFO = 0x4
+    private const val KEY_PERMISSION_UPDATE = 0x80
     private const val GRANT_PUBLIC_API_SDK = 36
 
     override val serviceName = "android.system.keystore2.IKeystoreService/default"
@@ -147,7 +149,7 @@ object Keystore2Interceptor : AbstractKeystoreInterceptor() {
                         InterceptorUtils.createErrorReply(RESPONSE_KEY_NOT_FOUND)
                     else TransactionResult.ContinueAndSkipPost
                 }
-                if ((grant.accessVector and 0x4) == 0) {
+                if ((grant.accessVector and KEY_PERMISSION_GET_INFO) == 0) {
                     return InterceptorUtils.createErrorReply(RESPONSE_PERMISSION_DENIED)
                 }
                 val response =
@@ -472,6 +474,27 @@ object Keystore2Interceptor : AbstractKeystoreInterceptor() {
     private fun handleUpdateSubcomponent(callingUid: Int, data: Parcel): TransactionResult {
         data.enforceInterface(IKeystoreService.DESCRIPTOR)
         val descriptor = data.readTypedObject(KeyDescriptor.CREATOR)
+        if (descriptor?.domain == Domain.GRANT) {
+            val grant =
+                KeyMintSecurityLevelInterceptor.resolveGrant(descriptor.nspace, callingUid)
+                    ?: return if (
+                        KeyMintSecurityLevelInterceptor.softwareGrants.containsKey(
+                            descriptor.nspace
+                        )
+                    )
+                        InterceptorUtils.createErrorReply(RESPONSE_KEY_NOT_FOUND)
+                    else TransactionResult.ContinueAndSkipPost
+
+            if ((grant.accessVector and KEY_PERMISSION_UPDATE) == 0) {
+                return InterceptorUtils.createErrorReply(RESPONSE_PERMISSION_DENIED)
+            }
+
+            val response =
+                KeyMintSecurityLevelInterceptor.getGeneratedKeyResponse(grant.ownerKeyId)
+                    ?: return InterceptorUtils.createErrorReply(RESPONSE_KEY_NOT_FOUND)
+            return updateSubcomponentMetadata(data, response, "grant[${descriptor.nspace}]")
+        }
+
         val generatedKeyInfo =
             KeyMintSecurityLevelInterceptor.findGeneratedKeyByKeyId(callingUid, descriptor?.nspace)
         if (generatedKeyInfo == null) {
@@ -491,13 +514,26 @@ object Keystore2Interceptor : AbstractKeystoreInterceptor() {
             return TransactionResult.ContinueAndSkipPost
         }
 
-        SystemLogger.info("Updating sub-component with key[${generatedKeyInfo.nspace}]")
-        val metadata = generatedKeyInfo.response.metadata
+        return updateSubcomponentMetadata(
+            data,
+            generatedKeyInfo.response,
+            "key[${generatedKeyInfo.nspace}]",
+        )
+    }
+
+    private fun updateSubcomponentMetadata(
+        data: Parcel,
+        response: KeyEntryResponse,
+        label: String,
+    ): TransactionResult {
+        SystemLogger.info("Updating sub-component with $label")
+        val metadata = response.metadata
         val publicCert = data.createByteArray()
         val certificateChain = data.createByteArray()
 
         metadata.certificate = publicCert
         metadata.certificateChain = certificateChain
+        metadata.modificationTimeMs = System.currentTimeMillis()
         SystemLogger.verbose(
             "Key updated with sizes: [publicCert, certificateChain] = [${publicCert?.size}, ${certificateChain?.size}]"
         )

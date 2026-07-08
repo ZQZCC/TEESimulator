@@ -28,9 +28,7 @@ abstract class GitExecutor @Inject constructor(private val execOperations: ExecO
 // Instantiate the helper class using Gradle's object factory
 val gitExecutor = objects.newInstance(GitExecutor::class.java)
 
-val minVersionCode = 83
-val gitCommitCount =
-    maxOf(gitExecutor.execute("git rev-list HEAD --count", rootDir).toInt(), minVersionCode)
+val moduleVersionCode = 83
 val gitCommitHash = gitExecutor.execute("git rev-parse --verify --short HEAD", rootDir)
 val verName = "v3.2"
 val requestedAbis =
@@ -54,7 +52,7 @@ android {
         applicationId = "org.matrix.TEESimulator"
         minSdk = 29
         targetSdk = 36
-        versionCode = gitCommitCount
+        versionCode = moduleVersionCode
         versionName = verName
         ndk { abiFilters += targetAbis }
     }
@@ -93,7 +91,8 @@ androidComponents {
         // --- Define output locations and file names ---
         // Stage all files in a temporary directory inside 'build' before zipping
         val tempModuleDir = project.layout.buildDirectory.dir("module/${variant.name}")
-        val zipFileName = "TEESimulator-$verName-$gitCommitCount-$gitCommitHash-$capitalized.zip"
+        val zipFileName =
+            "TEESimulator-$verName-$moduleVersionCode-$gitCommitHash-$capitalized.zip"
 
         // Task 1: Prepare all module files in the temporary build directory.
         // Using Sync ensures that stale files from previous runs are removed.
@@ -163,8 +162,8 @@ androidComponents {
                     include("module.prop")
                     // Use expand() for simple key-value replacement.
                     expand(
-                        "REPLACEMEVERCODE" to gitCommitCount.toString(),
-                        "REPLACEMEVER" to "$verName ($gitCommitCount)",
+                        "REPLACEMEVERCODE" to moduleVersionCode.toString(),
+                        "REPLACEMEVER" to "$verName ($moduleVersionCode)",
                     )
                 }
 
