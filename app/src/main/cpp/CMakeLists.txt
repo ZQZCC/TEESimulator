@@ -9,9 +9,9 @@ foreach(config RELEASE RELWITHDEBINFO MINSIZEREL)
     string(APPEND CMAKE_CXX_FLAGS_${config} " -O3 -flto=full -DLOG_DISABLED -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident")
     string(APPEND CMAKE_C_FLAGS_${config} " -DLOG_DISABLED -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-ident")
     string(APPEND CMAKE_SHARED_LINKER_FLAGS_${config}
-           " -flto=full -Wl,-O3 -Wl,--gc-sections -Wl,--icf=all -Wl,--as-needed -Wl,--build-id=none -Wl,--no-eh-frame-hdr")
+           " -flto=full -Wl,-O3 -Wl,--gc-sections -Wl,--icf=all -Wl,--as-needed -Wl,--build-id=none -Wl,--no-eh-frame-hdr -Wl,--pack-dyn-relocs=android+relr -Wl,--use-android-relr-tags")
     string(APPEND CMAKE_EXE_LINKER_FLAGS_${config}
-           " -flto=full -Wl,-O3 -Wl,--gc-sections -Wl,--icf=all -Wl,--as-needed -Wl,--build-id=none -Wl,--no-eh-frame-hdr")
+           " -flto=full -Wl,-O3 -Wl,--gc-sections -Wl,--icf=all -Wl,--as-needed -Wl,--build-id=none -Wl,--no-eh-frame-hdr -Wl,--pack-dyn-relocs=android+relr -Wl,--use-android-relr-tags")
 endforeach()
 
 # LSPlt configuration

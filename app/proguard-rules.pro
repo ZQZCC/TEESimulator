@@ -8,5 +8,8 @@
 
 -assumenosideeffects class org.matrix.TEESimulator.logging.SystemLogger {
     public void debug(java.lang.String);
+    public void info(java.lang.String);
+    public void warning(java.lang.String, java.lang.Throwable);
+    public void error(java.lang.String, java.lang.Throwable);
     public void verbose(java.lang.String);
 }
