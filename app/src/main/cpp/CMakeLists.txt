@@ -27,6 +27,8 @@ target_include_directories(binder PUBLIC external/AOSP/include)
 target_link_libraries(binder PRIVATE utils)
 
 add_executable(libinject.so inject/main.cpp inject/utils.cpp)
+target_sources(libinject.so PRIVATE
+        $<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>:inject/cxxabi_shim.cpp>)
 target_include_directories(libinject.so PUBLIC include)
 target_link_libraries(libinject.so PRIVATE dl log)
 
