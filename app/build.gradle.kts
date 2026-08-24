@@ -44,7 +44,7 @@ val targetAbis =
 android {
     namespace = "org.matrix.TEESimulator"
     compileSdk = 36
-    ndkVersion = "27.3.13750724"
+    ndkVersion = "29.0.14206865"
     buildToolsVersion = "36.0.0"
 
     defaultConfig {
@@ -54,6 +54,11 @@ android {
         versionCode = moduleVersionCode
         versionName = verName
         ndk { abiFilters += targetAbis }
+        externalNativeBuild {
+            cmake {
+                arguments += "-DANDROID_STL=none"
+            }
+        }
     }
 
     buildTypes {
@@ -67,7 +72,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
     }
-    buildFeatures { buildConfig = true }
+    buildFeatures {
+        buildConfig = true
+        prefab = true
+    }
     // Since 1.85, every BouncyCastle artifact ships an identical META-INF/LICENSE.md.
     packaging { resources { excludes += "META-INF/LICENSE.md" } }
     externalNativeBuild {
@@ -82,6 +90,7 @@ dependencies {
     compileOnly(project(":stub"))
     compileOnly(libs.annotation)
     implementation(libs.bcpkix)
+    implementation(libs.libcxx)
 }
 
 androidComponents {

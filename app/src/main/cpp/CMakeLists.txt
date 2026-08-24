@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
 project(TEESimulator)
 
+find_package(cxx REQUIRED CONFIG)
+link_libraries(cxx::cxx)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti")
@@ -27,8 +30,6 @@ target_include_directories(binder PUBLIC external/AOSP/include)
 target_link_libraries(binder PRIVATE utils)
 
 add_executable(libinject.so inject/main.cpp inject/utils.cpp)
-target_sources(libinject.so PRIVATE
-        $<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>:inject/cxxabi_shim.cpp>)
 target_include_directories(libinject.so PUBLIC include)
 target_link_libraries(libinject.so PRIVATE dl log)
 
