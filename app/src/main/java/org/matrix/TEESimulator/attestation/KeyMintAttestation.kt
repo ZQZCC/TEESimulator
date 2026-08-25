@@ -3,8 +3,6 @@ package org.matrix.TEESimulator.attestation
 import android.hardware.security.keymint.*
 import java.math.BigInteger
 import java.util.Date
-import javax.security.auth.x500.X500Principal
-import org.bouncycastle.asn1.x500.X500Name
 import org.matrix.TEESimulator.logging.KeyMintParameterLogger
 
 /**
@@ -28,7 +26,7 @@ data class KeyMintAttestation(
     val digest: List<Int>,
     val rsaPublicExponent: BigInteger?,
     val certificateSerial: BigInteger?,
-    val certificateSubject: X500Name?,
+    val certificateSubject: ByteArray?,
     val certificateNotBefore: Date?,
     val certificateNotAfter: Date?,
     val attestationChallenge: ByteArray?,
@@ -82,8 +80,8 @@ data class KeyMintAttestation(
         certificateSerial = params.findBlob(Tag.CERTIFICATE_SERIAL)?.let { BigInteger(it) },
 
         // AOSP: [key_param(tag = CERTIFICATE_SUBJECT, field = Blob)]
-        certificateSubject =
-            params.findBlob(Tag.CERTIFICATE_SUBJECT)?.let { X500Name(X500Principal(it).name) },
+        // The blob is already a DER-encoded X.500 Name; keep it verbatim.
+        certificateSubject = params.findBlob(Tag.CERTIFICATE_SUBJECT),
 
         // AOSP: [key_param(tag = CERTIFICATE_NOT_BEFORE, field = DateTime)]
         certificateNotBefore = params.findDate(Tag.CERTIFICATE_NOT_BEFORE),

@@ -8,7 +8,6 @@ import android.system.keystore2.KeyEntryResponse
 import android.system.keystore2.KeyMetadata
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
-import java.io.OutputStream
 import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.PrivateKey
@@ -21,11 +20,6 @@ import java.security.cert.X509Certificate
 import java.security.interfaces.ECPublicKey
 import java.security.spec.PKCS8EncodedKeySpec
 import java.util.Base64
-import org.bouncycastle.asn1.ASN1ObjectIdentifier
-import org.bouncycastle.asn1.DERNull
-import org.bouncycastle.asn1.x509.AlgorithmIdentifier
-import org.bouncycastle.cert.X509CertificateHolder
-import org.bouncycastle.operator.ContentSigner
 import org.matrix.TEESimulator.logging.SystemLogger
 import org.matrix.TEESimulator.util.AndroidDeviceUtils
 
@@ -166,49 +160,27 @@ object CertificateHelper {
         }
     }
 
-    fun toCertificate(holder: X509CertificateHolder): X509Certificate =
-        certificateFactory.generateCertificate(ByteArrayInputStream(holder.encoded))
-            as X509Certificate
-
-    fun buildContentSigner(
-        algorithm: String,
-        privateKey: PrivateKey,
-    ): ContentSigner {
-        val normalizedAlgorithm = normalizeSignatureAlgorithm(algorithm)
-        val algorithmIdentifier =
-            when (normalizedAlgorithm) {
-                "SHA256withECDSA" -> AlgorithmIdentifier(ASN1ObjectIdentifier(OID_SHA256_WITH_ECDSA))
-                "SHA256withRSA" ->
-                    AlgorithmIdentifier(
-                        ASN1ObjectIdentifier(OID_SHA256_WITH_RSA_ENCRYPTION),
-                        DERNull.INSTANCE,
-                    )
-                else -> throw IllegalArgumentException("Unsupported signature algorithm: $algorithm")
-            }
-        val signature =
-            Signature.getInstance(normalizedAlgorithm).apply { initSign(privateKey) }
-        val stream =
-            object : OutputStream() {
-                override fun write(b: Int) {
-                    signature.update(b.toByte())
-                }
-
-                override fun write(
-                    b: ByteArray,
-                    off: Int,
-                    len: Int,
-                ) {
-                    signature.update(b, off, len)
-                }
-            }
-        return object : ContentSigner {
-            override fun getAlgorithmIdentifier(): AlgorithmIdentifier = algorithmIdentifier
-
-            override fun getOutputStream(): OutputStream = stream
-
-            override fun getSignature(): ByteArray = signature.sign()
+    /** DER `AlgorithmIdentifier` for a certificate signature algorithm. */
+    fun signatureAlgorithmIdentifier(algorithm: String): ByteArray =
+        when (normalizeSignatureAlgorithm(algorithm)) {
+            "SHA256withECDSA" -> Der.sequence(Der.oid(OID_SHA256_WITH_ECDSA))
+            "SHA256withRSA" ->
+                Der.sequence(Der.oid(OID_SHA256_WITH_RSA_ENCRYPTION), Der.nullValue())
+            else -> throw IllegalArgumentException("Unsupported signature algorithm: $algorithm")
         }
-    }
+
+    /** Signs [data] with [privateKey] using the (normalized) JCA signature [algorithm]. */
+    fun sign(algorithm: String, privateKey: PrivateKey, data: ByteArray): ByteArray =
+        Signature.getInstance(normalizeSignatureAlgorithm(algorithm))
+            .apply {
+                initSign(privateKey)
+                update(data)
+            }
+            .sign()
+
+    /** Parses a DER-encoded certificate, throwing on failure. */
+    fun decodeCertificate(der: ByteArray): X509Certificate =
+        certificateFactory.generateCertificate(ByteArrayInputStream(der)) as X509Certificate
 
     private const val OID_EC_PUBLIC_KEY = "1.2.840.10045.2.1"
     private const val OID_RSA_ENCRYPTION = "1.2.840.113549.1.1.1"

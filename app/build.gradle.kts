@@ -89,8 +89,8 @@ android {
 dependencies {
     compileOnly(project(":stub"))
     compileOnly(libs.annotation)
-    implementation(libs.bcpkix)
     implementation(libs.libcxx)
+    testImplementation(libs.junit)
 }
 
 androidComponents {

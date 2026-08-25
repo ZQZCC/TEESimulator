@@ -8,18 +8,15 @@ import java.math.BigInteger
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.cert.Certificate
+import java.security.cert.X509Certificate
 import java.security.interfaces.ECKey
 import java.security.interfaces.RSAKey
 import java.security.spec.ECGenParameterSpec
 import java.security.spec.RSAKeyGenParameterSpec
+import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
-import org.bouncycastle.asn1.ASN1Primitive
-import org.bouncycastle.asn1.x500.X500Name
-import org.bouncycastle.asn1.x509.Extension
-import org.bouncycastle.asn1.x509.KeyUsage
-import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo
-import org.bouncycastle.cert.X509CertificateHolder
-import org.bouncycastle.cert.X509v3CertificateBuilder
+import java.util.TimeZone
 import org.matrix.TEESimulator.attestation.AttestationBuilder
 import org.matrix.TEESimulator.attestation.AttestationConstants
 import org.matrix.TEESimulator.attestation.KeyMintAttestation
@@ -156,8 +153,8 @@ object CertificateGenerator {
             .getOrNull()
     }
 
-    fun getIssuerFromKeybox(keybox: KeyBox) =
-        X509CertificateHolder(keybox.certificates[0].encoded).subject
+    fun getIssuerFromKeybox(keybox: KeyBox): ByteArray =
+        (keybox.certificates[0] as X509Certificate).subjectX500Principal.encoded
 
     private fun getKeyboxForAlgorithm(uid: Int, algorithm: Int): KeyBox {
         val keyboxFile = ConfigurationManager.getKeyboxFileForUid(uid)
@@ -171,8 +168,8 @@ object CertificateGenerator {
             ?: throw Exception("Could not load keybox for UID $uid and algorithm $algorithmName")
     }
 
-    /** Retrieves the key pair and issuer name for a given attestation key alias. */
-    private fun getAttestationKeyInfo(uid: Int, attestKeyAlias: String): Pair<KeyPair, X500Name>? {
+    /** Retrieves the key pair and DER-encoded issuer name for a given attestation key alias. */
+    private fun getAttestationKeyInfo(uid: Int, attestKeyAlias: String): Pair<KeyPair, ByteArray>? {
         SystemLogger.debug("Looking for attestation key: uid=$uid alias=$attestKeyAlias")
         val keyId = KeyIdentifier(uid, attestKeyAlias)
         // Access the public map of generated keys
@@ -180,7 +177,7 @@ object CertificateGenerator {
         return if (keyInfo != null) {
             val certChain = CertificateHelper.getCertificateChain(keyInfo.response)
             if (!certChain.isNullOrEmpty()) {
-                val issuer = X509CertificateHolder(certChain[0].encoded).subject
+                val issuer = (certChain[0] as X509Certificate).subjectX500Principal.encoded
                 Pair(keyInfo.keyPair, issuer)
             } else {
                 null
@@ -193,6 +190,15 @@ object CertificateGenerator {
         }
     }
 
+    // X.509 KeyUsage named-bit values (matching the historical BouncyCastle constants).
+    private const val KU_DIGITAL_SIGNATURE = 1 shl 7
+    private const val KU_DATA_ENCIPHERMENT = 1 shl 4
+    private const val KU_KEY_ENCIPHERMENT = 1 shl 5
+    private const val KU_KEY_AGREEMENT = 1 shl 3
+    private const val KU_KEY_CERT_SIGN = 1 shl 2
+
+    private const val OID_KEY_USAGE = "2.5.29.15"
+
     /** Maps KeyPurpose values to X.509 KeyUsage bits per KeyCreationResult.aidl spec */
     private fun buildKeyUsageFromPurposes(purposes: List<Int>): Int {
         var bits = 0
@@ -200,55 +206,82 @@ object CertificateGenerator {
             bits =
                 bits or
                     when (purpose) {
-                        KeyPurpose.SIGN -> KeyUsage.digitalSignature
-                        KeyPurpose.DECRYPT -> KeyUsage.dataEncipherment
-                        KeyPurpose.WRAP_KEY -> KeyUsage.keyEncipherment
-                        KeyPurpose.AGREE_KEY -> KeyUsage.keyAgreement
-                        KeyPurpose.ATTEST_KEY -> KeyUsage.keyCertSign
+                        KeyPurpose.SIGN -> KU_DIGITAL_SIGNATURE
+                        KeyPurpose.DECRYPT -> KU_DATA_ENCIPHERMENT
+                        KeyPurpose.WRAP_KEY -> KU_KEY_ENCIPHERMENT
+                        KeyPurpose.AGREE_KEY -> KU_KEY_AGREEMENT
+                        KeyPurpose.ATTEST_KEY -> KU_KEY_CERT_SIGN
                         else -> 0
                     }
         }
         return bits
     }
 
+    /** DER BIT STRING encoding of an X.509 KeyUsage value (named bits, trailing zeros trimmed). */
+    private fun encodeKeyUsage(usage: Int): ByteArray {
+        val two = byteArrayOf((usage and 0xff).toByte(), ((usage shr 8) and 0xff).toByte())
+        var length = two.size
+        while (length > 1 && two[length - 1].toInt() == 0) length--
+        val last = two[length - 1].toInt() and 0xff
+        var unused = 0
+        if (last == 0) {
+            unused = 8
+        } else {
+            var mask = 1
+            while ((last and mask) == 0) {
+                mask = mask shl 1
+                unused++
+            }
+        }
+        val content = ByteArray(1 + length)
+        content[0] = unused.toByte()
+        System.arraycopy(two, 0, content, 1, length)
+        return Der.tlv(0x03, content)
+    }
+
+    /** X.509 validity time: UTCTime for years 1950-2049, GeneralizedTime otherwise. */
+    private fun encodeTime(date: Date): ByteArray {
+        val calendar = Calendar.getInstance(TimeZone.getTimeZone("UTC"))
+        calendar.time = date
+        val year = calendar.get(Calendar.YEAR)
+        return if (year in 1950..2049) {
+            val formatter =
+                SimpleDateFormat("yyMMddHHmmss'Z'").apply { timeZone = TimeZone.getTimeZone("UTC") }
+            Der.tlv(0x17, formatter.format(date).toByteArray(Charsets.US_ASCII))
+        } else {
+            val formatter =
+                SimpleDateFormat("yyyyMMddHHmmss'Z'").apply {
+                    timeZone = TimeZone.getTimeZone("UTC")
+                }
+            Der.tlv(0x18, formatter.format(date).toByteArray(Charsets.US_ASCII))
+        }
+    }
+
+    // DER of the default subject Name: CN=Android Keystore Key (verified against BouncyCastle).
+    private val DEFAULT_SUBJECT_DER =
+        byteArrayOf(
+            0x30, 0x1f, 0x31, 0x1d, 0x30, 0x1b, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c, 0x14, 0x41,
+            0x6e, 0x64, 0x72, 0x6f, 0x69, 0x64, 0x20, 0x4b, 0x65, 0x79, 0x73, 0x74, 0x6f, 0x72,
+            0x65, 0x20, 0x4b, 0x65, 0x79,
+        )
+
     /** Constructs a new X.509 certificate with a simulated attestation extension. */
     private fun buildCertificate(
         subjectKeyPair: KeyPair,
         signingKeyPair: KeyPair,
-        issuer: X500Name,
+        issuer: ByteArray,
         params: KeyMintAttestation,
         uid: Int,
         securityLevel: Int,
     ): Certificate {
-        val subject = params.certificateSubject ?: X500Name("CN=Android Keystore Key")
+        val subject = params.certificateSubject ?: DEFAULT_SUBJECT_DER
 
         // AOSP add_required_parameters (security_level.rs) defaults:
         //   CERTIFICATE_NOT_BEFORE = 0 (Unix epoch)
         //   CERTIFICATE_NOT_AFTER  = 253402300799000 (9999-12-31T23:59:59 UTC)
         val notBefore = params.certificateNotBefore ?: Date(0)
         val notAfter = params.certificateNotAfter ?: Date(UNDEFINED_NOT_AFTER)
-
-        val builder =
-            X509v3CertificateBuilder(
-                issuer,
-                params.certificateSerial ?: BigInteger.ONE,
-                notBefore,
-                notAfter,
-                subject,
-                SubjectPublicKeyInfo.getInstance(
-                    ASN1Primitive.fromByteArray(subjectKeyPair.public.encoded)
-                ),
-            )
-
-        // Add KeyUsage extension only if purposes map to valid bits
-        val keyUsageBits = buildKeyUsageFromPurposes(params.purpose)
-        if (keyUsageBits != 0) {
-            builder.addExtension(Extension.keyUsage, true, KeyUsage(keyUsageBits))
-        }
-        // Add our custom, simulated attestation extension.
-        builder.addExtension(
-            AttestationBuilder.buildAttestationExtension(params, uid, securityLevel)
-        )
+        val serial = params.certificateSerial ?: BigInteger.ONE
 
         val signerAlgorithm =
             when (signingKeyPair.private) {
@@ -259,9 +292,38 @@ object CertificateGenerator {
                         "Unsupported signing key type: ${signingKeyPair.private.javaClass}"
                     )
             }
-        val contentSigner =
-            CertificateHelper.buildContentSigner(signerAlgorithm, signingKeyPair.private)
+        val algorithmIdentifier = CertificateHelper.signatureAlgorithmIdentifier(signerAlgorithm)
 
-        return CertificateHelper.toCertificate(builder.build(contentSigner))
+        val extensions = mutableListOf<ByteArray>()
+        val keyUsageBits = buildKeyUsageFromPurposes(params.purpose)
+        if (keyUsageBits != 0) {
+            extensions.add(
+                Der.sequence(
+                    Der.oid(OID_KEY_USAGE),
+                    Der.bool(true), // critical
+                    Der.octetString(encodeKeyUsage(keyUsageBits)),
+                )
+            )
+        }
+        extensions.add(AttestationBuilder.buildAttestationExtension(params, uid, securityLevel))
+
+        // TBSCertificate: subject/issuer names and the SubjectPublicKeyInfo are already DER.
+        val tbsCertificate =
+            Der.sequence(
+                Der.explicit(0, Der.integer(2)), // version v3
+                Der.integer(serial),
+                algorithmIdentifier,
+                issuer,
+                Der.sequence(encodeTime(notBefore), encodeTime(notAfter)),
+                subject,
+                subjectKeyPair.public.encoded,
+                Der.explicit(3, Der.sequence(extensions)),
+            )
+
+        val signature =
+            CertificateHelper.sign(signerAlgorithm, signingKeyPair.private, tbsCertificate)
+        val certificate =
+            Der.sequence(tbsCertificate, algorithmIdentifier, Der.bitStringNoUnused(signature))
+        return CertificateHelper.decodeCertificate(certificate)
     }
 }

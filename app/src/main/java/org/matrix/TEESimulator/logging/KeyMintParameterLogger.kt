@@ -5,7 +5,6 @@ import java.math.BigInteger
 import java.nio.charset.StandardCharsets
 import java.util.Date
 import javax.security.auth.x500.X500Principal
-import org.bouncycastle.asn1.x500.X500Name
 import org.matrix.TEESimulator.util.toHex
 
 /**
@@ -120,7 +119,7 @@ object KeyMintParameterLogger {
                 Tag.CREATION_DATETIME,
                 Tag.ORIGINATION_EXPIRE_DATETIME,
                 Tag.USAGE_EXPIRE_DATETIME -> Date(value.dateTime).toString()
-                Tag.CERTIFICATE_SUBJECT -> X500Name(X500Principal(value.blob).name).toString()
+                Tag.CERTIFICATE_SUBJECT -> X500Principal(value.blob).name
                 Tag.USER_SECURE_ID,
                 Tag.RSA_PUBLIC_EXPONENT -> value.longInteger.toString()
                 Tag.NO_AUTH_REQUIRED -> value.boolValue.toString()

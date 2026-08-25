@@ -4,347 +4,184 @@ import android.content.pm.PackageManager
 import android.os.Build
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
-import org.bouncycastle.asn1.ASN1Boolean
-import org.bouncycastle.asn1.ASN1Encodable
-import org.bouncycastle.asn1.ASN1Enumerated
-import org.bouncycastle.asn1.ASN1Integer
-import org.bouncycastle.asn1.ASN1Sequence
-import org.bouncycastle.asn1.DERNull
-import org.bouncycastle.asn1.DEROctetString
-import org.bouncycastle.asn1.DERSequence
-import org.bouncycastle.asn1.DERSet
-import org.bouncycastle.asn1.DERTaggedObject
-import org.bouncycastle.asn1.x509.Extension
 import org.matrix.TEESimulator.config.ConfigurationManager
-import org.matrix.TEESimulator.logging.SystemLogger
+import org.matrix.TEESimulator.pki.Der
 import org.matrix.TEESimulator.util.AndroidDeviceUtils
 import org.matrix.TEESimulator.util.AndroidDeviceUtils.DO_NOT_REPORT
 
 /**
  * A builder object responsible for constructing the ASN.1 DER-encoded Android Key Attestation
- * extension.
+ * extension. All output is raw DER produced via [Der].
  */
 object AttestationBuilder {
 
     /**
-     * Builds the complete X.509 attestation extension.
-     *
-     * @param params The parsed key generation parameters.
-     * @param uid The UID of the application requesting attestation.
-     * @param securityLevel The security level (e.g., TEE, StrongBox) to report.
-     * @return A Bouncy Castle [Extension] object ready to be added to a certificate.
+     * Builds the complete X.509 attestation extension as DER bytes: a `SEQUENCE { OID, OCTET STRING }`
+     * where the octet string wraps the encoded `KeyDescription`.
      */
     fun buildAttestationExtension(
         params: KeyMintAttestation,
         uid: Int,
         securityLevel: Int,
-    ): Extension {
+    ): ByteArray {
         val keyDescription = buildKeyDescription(params, uid, securityLevel)
-        var formattedString =
-            keyDescription.joinToString(separator = ", ") {
-                AttestationPatcher.formatAsn1Primitive(it)
-            }
-        SystemLogger.verbose("Forged attestation data: ${formattedString}")
-        return Extension(ATTESTATION_OID, false, DEROctetString(keyDescription.encoded))
+        return Der.sequence(Der.oid(ATTESTATION_OID), Der.octetString(keyDescription))
+    }
+
+    /** DER-encoded `RootOfTrust` SEQUENCE. */
+    internal fun rootOfTrustBytes(): ByteArray {
+        val elements = arrayOfNulls<ByteArray>(4)
+        elements[AttestationConstants.ROOT_OF_TRUST_VERIFIED_BOOT_KEY_INDEX] =
+            Der.octetString(AndroidDeviceUtils.bootKey)
+        elements[AttestationConstants.ROOT_OF_TRUST_DEVICE_LOCKED_INDEX] = Der.bool(true)
+        elements[AttestationConstants.ROOT_OF_TRUST_VERIFIED_BOOT_STATE_INDEX] = Der.enumerated(0)
+        elements[AttestationConstants.ROOT_OF_TRUST_VERIFIED_BOOT_HASH_INDEX] =
+            Der.octetString(AndroidDeviceUtils.bootHash)
+        return Der.sequence(elements.map { it!! })
     }
 
     /**
-     * Builds the `RootOfTrust` ASN.1 sequence. This contains critical boot state information.
-     *
-     * @param originalRootOfTrust An optional, pre-existing RoT to extract the boot hash from.
-     * @return The constructed [DERSequence] for the Root of Trust.
+     * Simulated hardware properties as DER `[tag] EXPLICIT` fragments, keyed by attestation tag. A
+     * null value means the property should be removed.
      */
-    internal fun buildRootOfTrust(originalRootOfTrust: ASN1Encodable?): DERSequence {
-        val rootOfTrustElements = arrayOfNulls<ASN1Encodable>(4)
-        rootOfTrustElements[AttestationConstants.ROOT_OF_TRUST_VERIFIED_BOOT_KEY_INDEX] =
-            DEROctetString(AndroidDeviceUtils.bootKey)
-        rootOfTrustElements[AttestationConstants.ROOT_OF_TRUST_DEVICE_LOCKED_INDEX] =
-            ASN1Boolean.TRUE // deviceLocked: true, for security
-        rootOfTrustElements[AttestationConstants.ROOT_OF_TRUST_VERIFIED_BOOT_STATE_INDEX] =
-            ASN1Enumerated(0) // verifiedBootState: Verified
-        rootOfTrustElements[AttestationConstants.ROOT_OF_TRUST_VERIFIED_BOOT_HASH_INDEX] =
-            DEROctetString(AndroidDeviceUtils.bootHash)
+    internal fun simulatedHardwarePropertyBytes(uid: Int): Map<Int, ByteArray?> {
+        val properties = LinkedHashMap<Int, ByteArray?>()
 
-        return DERSequence(rootOfTrustElements)
-    }
-
-    /**
-     * Assembles a map representing the desired state of simulated hardware-enforced properties. A
-     * null value for a given tag indicates that it should be removed from the attestation.
-     *
-     * @param uid The UID of the calling application.
-     * @return A map where keys are attestation tag numbers and values are the desired
-     *   [DERTaggedObject] or null to signify removal.
-     */
-    fun getSimulatedHardwareProperties(uid: Int): Map<Int, DERTaggedObject?> {
-        val properties = mutableMapOf<Int, DERTaggedObject?>()
-
-        // OS Version is always present.
         properties[AttestationConstants.TAG_OS_VERSION] =
-            DERTaggedObject(
-                true,
+            Der.explicit(
                 AttestationConstants.TAG_OS_VERSION,
-                ASN1Integer(AndroidDeviceUtils.osVersion.toLong()),
+                Der.integer(AndroidDeviceUtils.osVersion.toLong()),
             )
 
         val osPatch = AndroidDeviceUtils.getPatchLevel(uid)
         properties[AttestationConstants.TAG_OS_PATCHLEVEL] =
-            if (osPatch != DO_NOT_REPORT) {
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_OS_PATCHLEVEL,
-                    ASN1Integer(osPatch.toLong()),
-                )
-            } else {
-                null // Signal for removal
-            }
+            if (osPatch != DO_NOT_REPORT)
+                Der.explicit(AttestationConstants.TAG_OS_PATCHLEVEL, Der.integer(osPatch.toLong()))
+            else null
 
         val vendorPatch = AndroidDeviceUtils.getVendorPatchLevelLong(uid)
         properties[AttestationConstants.TAG_VENDOR_PATCHLEVEL] =
-            if (vendorPatch != DO_NOT_REPORT) {
-                DERTaggedObject(
-                    true,
+            if (vendorPatch != DO_NOT_REPORT)
+                Der.explicit(
                     AttestationConstants.TAG_VENDOR_PATCHLEVEL,
-                    ASN1Integer(vendorPatch.toLong()),
+                    Der.integer(vendorPatch.toLong()),
                 )
-            } else {
-                null // Signal for removal
-            }
+            else null
 
         val bootPatch = AndroidDeviceUtils.getBootPatchLevelLong(uid)
         properties[AttestationConstants.TAG_BOOT_PATCHLEVEL] =
-            if (bootPatch != DO_NOT_REPORT) {
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_BOOT_PATCHLEVEL,
-                    ASN1Integer(bootPatch.toLong()),
-                )
-            } else {
-                null // Signal for removal
-            }
+            if (bootPatch != DO_NOT_REPORT)
+                Der.explicit(AttestationConstants.TAG_BOOT_PATCHLEVEL, Der.integer(bootPatch.toLong()))
+            else null
 
         return properties
     }
 
-    /** Constructs the main `KeyDescription` sequence, which is the core of the attestation. */
+    /** Constructs the main `KeyDescription` SEQUENCE, which is the core of the attestation. */
     private fun buildKeyDescription(
         params: KeyMintAttestation,
         uid: Int,
         securityLevel: Int,
-    ): ASN1Sequence {
+    ): ByteArray {
         val teeEnforced = buildTeeEnforcedList(params, uid, securityLevel)
         val softwareEnforced = buildSoftwareEnforcedList(params, uid, securityLevel)
 
-        val fields =
-            arrayOf(
-                ASN1Integer(
-                    AndroidDeviceUtils.getAttestVersion(securityLevel).toLong()
-                ), // attestationVersion
-                ASN1Enumerated(securityLevel), // attestationSecurityLevel
-                ASN1Integer(
-                    AndroidDeviceUtils.getKeymasterVersion(securityLevel).toLong()
-                ), // keymasterVersion
-                ASN1Enumerated(securityLevel), // keymasterSecurityLevel
-                DEROctetString(params.attestationChallenge ?: ByteArray(0)), // attestationChallenge
-                DEROctetString(ByteArray(0)), // uniqueId
-                softwareEnforced,
-                teeEnforced,
-            )
-        return DERSequence(fields)
+        return Der.sequence(
+            Der.integer(AndroidDeviceUtils.getAttestVersion(securityLevel).toLong()),
+            Der.enumerated(securityLevel.toLong()),
+            Der.integer(AndroidDeviceUtils.getKeymasterVersion(securityLevel).toLong()),
+            Der.enumerated(securityLevel.toLong()),
+            Der.octetString(params.attestationChallenge ?: ByteArray(0)),
+            Der.octetString(ByteArray(0)), // uniqueId
+            softwareEnforced,
+            teeEnforced,
+        )
     }
 
-    /** Builds the `TeeEnforced` authorization list. These are properties the TEE "guarantees". */
+    /** Builds the `TeeEnforced` authorization list, sorted by tag as AOSP expects. */
     private fun buildTeeEnforcedList(
         params: KeyMintAttestation,
         uid: Int,
         securityLevel: Int,
-    ): DERSequence {
-        val list =
-            mutableListOf<ASN1Encodable>(
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_PURPOSE,
-                    DERSet(params.purpose.map { ASN1Integer(it.toLong()) }.toTypedArray()),
-                ),
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_ALGORITHM,
-                    ASN1Integer(params.algorithm.toLong()),
-                ),
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_KEY_SIZE,
-                    ASN1Integer(params.keySize.toLong()),
-                ),
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_DIGEST,
-                    DERSet(params.digest.map { ASN1Integer(it.toLong()) }.toTypedArray()),
-                ),
-            )
+    ): ByteArray {
+        val list = mutableListOf<Pair<Int, ByteArray>>()
 
-        if (params.ecCurve != null) {
-            list.add(
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_EC_CURVE,
-                    ASN1Integer(params.ecCurve.toLong()),
-                )
-            )
-        }
+        fun add(tag: Int, value: ByteArray) = list.add(tag to Der.explicit(tag, value))
 
-        if (params.padding.isNotEmpty()) {
-            list.add(
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_PADDING,
-                    DERSet(params.padding.map { ASN1Integer(it.toLong()) }.toTypedArray()),
-                )
-            )
-        }
-
-        if (params.rsaPublicExponent != null) {
-            list.add(
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_RSA_PUBLIC_EXPONENT,
-                    ASN1Integer(params.rsaPublicExponent.toLong()),
-                )
-            )
-        }
-
-        list.addAll(
-            listOf(
-                DERTaggedObject(true, AttestationConstants.TAG_NO_AUTH_REQUIRED, DERNull.INSTANCE),
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_ORIGIN,
-                    ASN1Integer(0L),
-                ), // KeyOrigin.GENERATED
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_ROOT_OF_TRUST,
-                    buildRootOfTrust(null),
-                ),
-            )
+        add(
+            AttestationConstants.TAG_PURPOSE,
+            Der.set(params.purpose.map { Der.integer(it.toLong()) }),
+        )
+        add(AttestationConstants.TAG_ALGORITHM, Der.integer(params.algorithm.toLong()))
+        add(AttestationConstants.TAG_KEY_SIZE, Der.integer(params.keySize.toLong()))
+        add(
+            AttestationConstants.TAG_DIGEST,
+            Der.set(params.digest.map { Der.integer(it.toLong()) }),
         )
 
-        // Use the same logic as getSimulatedHardwareProperties to conditionally add patch levels.
-        val simulatedProperties = getSimulatedHardwareProperties(uid)
-        simulatedProperties.values.filterNotNull().forEach { list.add(it) }
+        if (params.ecCurve != null) {
+            add(AttestationConstants.TAG_EC_CURVE, Der.integer(params.ecCurve.toLong()))
+        }
+        if (params.padding.isNotEmpty()) {
+            add(
+                AttestationConstants.TAG_PADDING,
+                Der.set(params.padding.map { Der.integer(it.toLong()) }),
+            )
+        }
+        if (params.rsaPublicExponent != null) {
+            add(
+                AttestationConstants.TAG_RSA_PUBLIC_EXPONENT,
+                Der.integer(params.rsaPublicExponent.toLong()),
+            )
+        }
 
-        // Add optional device identifiers if they were provided.
-        params.brand?.let {
-            list.add(
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_ATTESTATION_ID_BRAND,
-                    DEROctetString(it),
-                )
-            )
+        add(AttestationConstants.TAG_NO_AUTH_REQUIRED, Der.nullValue())
+        add(AttestationConstants.TAG_ORIGIN, Der.integer(0L)) // KeyOrigin.GENERATED
+        add(AttestationConstants.TAG_ROOT_OF_TRUST, rootOfTrustBytes())
+
+        // Conditionally add simulated patch levels (already fully encoded [tag] EXPLICIT fragments).
+        simulatedHardwarePropertyBytes(uid).forEach { (tag, bytes) ->
+            if (bytes != null) list.add(tag to bytes)
         }
-        params.device?.let {
-            list.add(
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_ATTESTATION_ID_DEVICE,
-                    DEROctetString(it),
-                )
-            )
-        }
-        params.product?.let {
-            list.add(
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_ATTESTATION_ID_PRODUCT,
-                    DEROctetString(it),
-                )
-            )
-        }
-        params.serial?.let {
-            list.add(
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_ATTESTATION_ID_SERIAL,
-                    DEROctetString(it),
-                )
-            )
-        }
-        params.imei?.let {
-            list.add(
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_ATTESTATION_ID_IMEI,
-                    DEROctetString(it),
-                )
-            )
-        }
-        params.meid?.let {
-            list.add(
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_ATTESTATION_ID_MEID,
-                    DEROctetString(it),
-                )
-            )
-        }
+
+        params.brand?.let { add(AttestationConstants.TAG_ATTESTATION_ID_BRAND, Der.octetString(it)) }
+        params.device?.let { add(AttestationConstants.TAG_ATTESTATION_ID_DEVICE, Der.octetString(it)) }
+        params.product?.let { add(AttestationConstants.TAG_ATTESTATION_ID_PRODUCT, Der.octetString(it)) }
+        params.serial?.let { add(AttestationConstants.TAG_ATTESTATION_ID_SERIAL, Der.octetString(it)) }
+        params.imei?.let { add(AttestationConstants.TAG_ATTESTATION_ID_IMEI, Der.octetString(it)) }
+        params.meid?.let { add(AttestationConstants.TAG_ATTESTATION_ID_MEID, Der.octetString(it)) }
         params.manufacturer?.let {
-            list.add(
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_ATTESTATION_ID_MANUFACTURER,
-                    DEROctetString(it),
-                )
-            )
+            add(AttestationConstants.TAG_ATTESTATION_ID_MANUFACTURER, Der.octetString(it))
         }
-        params.model?.let {
-            list.add(
-                DERTaggedObject(
-                    true,
-                    AttestationConstants.TAG_ATTESTATION_ID_MODEL,
-                    DEROctetString(it),
-                )
-            )
-        }
+        params.model?.let { add(AttestationConstants.TAG_ATTESTATION_ID_MODEL, Der.octetString(it)) }
         if (AndroidDeviceUtils.getAttestVersion(securityLevel) >= 300) {
             params.secondImei?.let {
-                list.add(
-                    DERTaggedObject(
-                        true,
-                        AttestationConstants.TAG_ATTESTATION_ID_SECOND_IMEI,
-                        DEROctetString(it),
-                    )
-                )
+                add(AttestationConstants.TAG_ATTESTATION_ID_SECOND_IMEI, Der.octetString(it))
             }
         }
-        return DERSequence(list.sortedBy { (it as DERTaggedObject).tagNo }.toTypedArray())
+
+        return Der.sequence(list.sortedBy { it.first }.map { it.second })
     }
 
-    /**
-     * Builds the `SoftwareEnforced` authorization list. These are properties guaranteed by
-     * Keystore.
-     */
+    /** Builds the `SoftwareEnforced` authorization list (insertion order, as AOSP emits it). */
     private fun buildSoftwareEnforcedList(
         params: KeyMintAttestation,
         uid: Int,
         securityLevel: Int,
-    ): DERSequence {
-        val list = mutableListOf<ASN1Encodable>()
+    ): ByteArray {
+        val list = mutableListOf<ByteArray>()
 
         list.add(
-            DERTaggedObject(
-                true,
+            Der.explicit(
                 AttestationConstants.TAG_CREATION_DATETIME,
-                ASN1Integer(System.currentTimeMillis()),
+                Der.integer(System.currentTimeMillis()),
             )
         )
 
-        // AOSP add_required_parameters (security_level.rs) only adds
-        // ATTESTATION_APPLICATION_ID when an attestation challenge is present.
+        // AOSP add_required_parameters only adds ATTESTATION_APPLICATION_ID when a challenge exists.
         if (params.attestationChallenge != null) {
             list.add(
-                DERTaggedObject(
-                    true,
+                Der.explicit(
                     AttestationConstants.TAG_ATTESTATION_APPLICATION_ID,
                     createApplicationId(uid),
                 )
@@ -352,20 +189,16 @@ object AttestationBuilder {
         }
         if (AndroidDeviceUtils.getAttestVersion(securityLevel) >= 400) {
             list.add(
-                DERTaggedObject(
-                    true,
+                Der.explicit(
                     AttestationConstants.TAG_MODULE_HASH,
-                    DEROctetString(AndroidDeviceUtils.moduleHash),
+                    Der.octetString(AndroidDeviceUtils.moduleHash),
                 )
             )
         }
-        return DERSequence(list.toTypedArray())
+        return Der.sequence(list)
     }
 
-    /**
-     * A wrapper for a byte array that provides content-based equality. This is necessary for using
-     * signature digests in a Set.
-     */
+    /** Content-based equality wrapper so signature digests can be de-duplicated in a set. */
     private data class Digest(val digest: ByteArray) {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
@@ -377,16 +210,11 @@ object AttestationBuilder {
     }
 
     /**
-     * Creates the AttestationApplicationId structure. This structure contains information about the
-     * package(s) and their signing certificates.
-     *
-     * @param uid The UID of the application.
-     * @return A DER-encoded octet string containing the application ID information.
-     * @throws IllegalStateException If the PackageManager or package information cannot be
-     *   retrieved.
+     * Creates the `AttestationApplicationId` structure as a DER OCTET STRING wrapping the id
+     * SEQUENCE. It contains the package(s) and their signing certificate digests.
      */
     @Throws(Throwable::class)
-    private fun createApplicationId(uid: Int): DEROctetString {
+    private fun createApplicationId(uid: Int): ByteArray {
         val pm =
             ConfigurationManager.getPackageManager()
                 ?: throw IllegalStateException("PackageManager not found!")
@@ -394,10 +222,9 @@ object AttestationBuilder {
             pm.getPackagesForUid(uid) ?: throw IllegalStateException("No packages for UID $uid")
 
         val sha256 = MessageDigest.getInstance("SHA-256")
-        val packageInfoList = mutableListOf<DERSequence>()
+        val packageInfos = mutableListOf<ByteArray>()
         val signatureDigests = mutableSetOf<Digest>()
 
-        // Process all packages associated with the UID in a single loop.
         packages.forEach { packageName ->
             val userId = uid / 100000
             val packageInfo =
@@ -412,34 +239,24 @@ object AttestationBuilder {
                     pm.getPackageInfo(packageName, PackageManager.GET_SIGNING_CERTIFICATES, userId)
                 }
 
-            // Add package information (name and version code) to our list.
-            packageInfoList.add(
-                DERSequence(
-                    arrayOf(
-                        DEROctetString(packageInfo.packageName.toByteArray(StandardCharsets.UTF_8)),
-                        ASN1Integer(packageInfo.longVersionCode),
-                    )
+            packageInfos.add(
+                Der.sequence(
+                    Der.octetString(packageInfo.packageName.toByteArray(StandardCharsets.UTF_8)),
+                    Der.integer(packageInfo.longVersionCode),
                 )
             )
 
-            // Collect unique signature digests from the signing history.
             packageInfo.signingInfo?.signingCertificateHistory?.forEach { signature ->
-                val digest = sha256.digest(signature.toByteArray())
-                signatureDigests.add(Digest(digest))
+                signatureDigests.add(Digest(sha256.digest(signature.toByteArray())))
             }
         }
 
-        // The application ID is a sequence of two sets:
-        // 1. A set of package information (name and version).
-        // 2. A set of SHA-256 digests of the signing certificates.
         val applicationIdSequence =
-            DERSequence(
-                arrayOf(
-                    DERSet(packageInfoList.toTypedArray()),
-                    DERSet(signatureDigests.map { DEROctetString(it.digest) }.toTypedArray()),
-                )
+            Der.sequence(
+                Der.set(packageInfos),
+                Der.set(signatureDigests.map { Der.octetString(it.digest) }),
             )
 
-        return DEROctetString(applicationIdSequence.encoded)
+        return Der.octetString(applicationIdSequence)
     }
 }

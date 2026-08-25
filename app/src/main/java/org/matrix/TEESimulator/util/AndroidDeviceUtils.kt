@@ -9,13 +9,10 @@ import java.io.FileInputStream
 import java.security.MessageDigest
 import java.time.LocalDate
 import java.util.concurrent.ThreadLocalRandom
-import org.bouncycastle.asn1.ASN1EncodableVector
-import org.bouncycastle.asn1.ASN1Integer
-import org.bouncycastle.asn1.DEROctetString
-import org.bouncycastle.asn1.DERSequence
 import org.matrix.TEESimulator.attestation.DeviceAttestationService
 import org.matrix.TEESimulator.config.ConfigurationManager
 import org.matrix.TEESimulator.logging.SystemLogger
+import org.matrix.TEESimulator.pki.Der
 
 /**
  * Provides utility functions for accessing Android system properties and device-specific
@@ -485,21 +482,12 @@ object AndroidDeviceUtils {
                 )
 
                 val modules = apexInfos.map { (packageName, versionCode) ->
-                    // Create the components
-                    val nameOctet = DEROctetString(packageName.toByteArray(Charsets.UTF_8))
-                    val versionInt = ASN1Integer(versionCode)
-
-                    // Create the Sequence: SEQUENCE { packageName, version }
-                    val vec = ASN1EncodableVector()
-                    vec.add(nameOctet)
-                    vec.add(versionInt)
-                    val sequence = DERSequence(vec)
+                    // SEQUENCE { OCTET STRING packageName, INTEGER version }
+                    val nameEncoded = Der.octetString(packageName.toByteArray(Charsets.UTF_8))
+                    val fullEncoded = Der.sequence(nameEncoded, Der.integer(versionCode))
 
                     // We store the encoded name separately because Rust sorts ONLY by this
-                    ModuleEntry(
-                        nameEncoded = nameOctet.encoded,
-                        fullEncoded = sequence.encoded,
-                    )
+                    ModuleEntry(nameEncoded = nameEncoded, fullEncoded = fullEncoded)
                 }
 
                 // 2. Sort manually based on the encoded Package Name (lexicographically)
@@ -514,8 +502,9 @@ object AndroidDeviceUtils {
                 sortedModules.forEach { payloadStream.write(it.fullEncoded) }
                 val payload = payloadStream.toByteArray()
 
-                // 4. Wrap manually in a DER SET tag (0x31)
-                // We cannot use DERSet(vector) because it would re-sort incorrectly.
+                // 4. Wrap manually in a DER SET tag (0x31).
+                // We cannot use Der.set(...) because it would re-sort by full encoding, whereas the
+                // Rust reference sorts by the encoded package name only.
                 val finalDerSet = encodeAsDerSet(payload)
 
                 // 5. Compute SHA-256

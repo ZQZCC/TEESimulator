@@ -8,21 +8,15 @@ import java.security.KeyStore
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.security.spec.ECGenParameterSpec
-import org.bouncycastle.asn1.ASN1Integer
-import org.bouncycastle.asn1.ASN1ObjectIdentifier
-import org.bouncycastle.asn1.ASN1OctetString
-import org.bouncycastle.asn1.ASN1Sequence
-import org.bouncycastle.asn1.ASN1TaggedObject
-import org.bouncycastle.asn1.x509.Extension
-import org.bouncycastle.cert.X509CertificateHolder
 import org.matrix.TEESimulator.logging.SystemLogger
+import org.matrix.TEESimulator.pki.DerReader
 import org.matrix.TEESimulator.util.toHex
 
 /**
  * The ASN.1 Object Identifier for the Key Attestation extension in Android. This is defined in the
  * Android Keystore documentation.
  */
-val ATTESTATION_OID: ASN1ObjectIdentifier = ASN1ObjectIdentifier("1.3.6.1.4.1.11129.2.1.17")
+const val ATTESTATION_OID: String = "1.3.6.1.4.1.11129.2.1.17"
 
 /**
  * A service to interact with the device's Trusted Execution Environment (TEE). It provides
@@ -141,31 +135,19 @@ object DeviceAttestationService {
         val leafCert = getAttestationCertificate() ?: return null
 
         try {
-            val leafHolder = X509CertificateHolder(leafCert.encoded)
-            val extension: Extension =
-                leafHolder.getExtension(ATTESTATION_OID)
-                    ?: return null // No attestation extension found.
-
-            // The extension's value is an ASN.1 sequence.
-            val keyDescriptionSeq = ASN1Sequence.getInstance(extension.extnValue.octets)
-            var formattedString =
-                keyDescriptionSeq.joinToString(separator = ", ") {
-                    AttestationPatcher.formatAsn1Primitive(it)
-                }
-            SystemLogger.verbose("Cached attestation data: ${formattedString}")
-            val fields = keyDescriptionSeq.toArray()
+            // getExtensionValue returns the extnValue OCTET STRING; its content is the
+            // DER-encoded KeyDescription SEQUENCE.
+            val extnValue = leafCert.getExtensionValue(ATTESTATION_OID) ?: return null
+            // Strip the extnValue OCTET STRING, then the KeyDescription SEQUENCE, to reach its fields.
+            val fields = DerReader.children(DerReader.readOne(extnValue).inner().value)
 
             val attestVersion =
-                ASN1Integer.getInstance(
-                        fields[AttestationConstants.KEY_DESCRIPTION_ATTESTATION_VERSION_INDEX]
-                    )
-                    .positiveValue
+                fields[AttestationConstants.KEY_DESCRIPTION_ATTESTATION_VERSION_INDEX]
+                    .positiveInt()
                     .toInt()
             val keymasterVersion =
-                ASN1Integer.getInstance(
-                        fields[AttestationConstants.KEY_DESCRIPTION_KEYMINT_VERSION_INDEX]
-                    )
-                    .positiveValue
+                fields[AttestationConstants.KEY_DESCRIPTION_KEYMINT_VERSION_INDEX]
+                    .positiveInt()
                     .toInt()
 
             var moduleHash: ByteArray? = null
@@ -177,71 +159,33 @@ object DeviceAttestationService {
             var bootPatchLevel: Int? = null
 
             val softwareEnforced =
-                ASN1Sequence.getInstance(
-                    fields[AttestationConstants.KEY_DESCRIPTION_SOFTWARE_ENFORCED_INDEX]
-                )
-            moduleHash =
-                softwareEnforced
-                    .toArray()
-                    .firstOrNull {
-                        (it as? ASN1TaggedObject)?.tagNo == AttestationConstants.TAG_MODULE_HASH
-                    }
-                    ?.let {
-                        ASN1OctetString.getInstance((it as ASN1TaggedObject).baseObject).octets
-                    }
+                fields[AttestationConstants.KEY_DESCRIPTION_SOFTWARE_ENFORCED_INDEX]
+            DerReader.children(softwareEnforced.value)
+                .firstOrNull { it.isContext && it.tagNo == AttestationConstants.TAG_MODULE_HASH }
+                ?.let { moduleHash = it.inner().value }
 
-            val teeEnforced =
-                ASN1Sequence.getInstance(
-                    fields[AttestationConstants.KEY_DESCRIPTION_TEE_ENFORCED_INDEX]
-                )
-            teeEnforced.forEach { element ->
-                val tagged = element as ASN1TaggedObject
+            val teeEnforced = fields[AttestationConstants.KEY_DESCRIPTION_TEE_ENFORCED_INDEX]
+            DerReader.children(teeEnforced.value).forEach { tagged ->
                 when (tagged.tagNo) {
                     AttestationConstants.TAG_ROOT_OF_TRUST -> {
-                        val rotSeq = ASN1Sequence.getInstance(tagged.baseObject.toASN1Primitive())
-                        if (rotSeq.size() >= 4) {
+                        val rot = DerReader.children(tagged.inner().value)
+                        if (rot.size >= 4) {
                             verifiedBootKey =
-                                ASN1OctetString.getInstance(
-                                        rotSeq.getObjectAt(
-                                            AttestationConstants
-                                                .ROOT_OF_TRUST_VERIFIED_BOOT_KEY_INDEX
-                                        )
-                                    )
-                                    .octets
+                                rot[AttestationConstants.ROOT_OF_TRUST_VERIFIED_BOOT_KEY_INDEX]
+                                    .value
                             verifiedBootHash =
-                                ASN1OctetString.getInstance(
-                                        rotSeq.getObjectAt(
-                                            AttestationConstants
-                                                .ROOT_OF_TRUST_VERIFIED_BOOT_HASH_INDEX
-                                        )
-                                    )
-                                    .octets
+                                rot[AttestationConstants.ROOT_OF_TRUST_VERIFIED_BOOT_HASH_INDEX]
+                                    .value
                         }
                     }
-                    AttestationConstants.TAG_OS_VERSION -> {
-                        osVersion =
-                            ASN1Integer.getInstance(tagged.baseObject.toASN1Primitive())
-                                .positiveValue
-                                .toInt()
-                    }
-                    AttestationConstants.TAG_OS_PATCHLEVEL -> {
-                        osPatchLevel =
-                            ASN1Integer.getInstance(tagged.baseObject.toASN1Primitive())
-                                .positiveValue
-                                .toInt()
-                    }
-                    AttestationConstants.TAG_VENDOR_PATCHLEVEL -> {
-                        vendorPatchLevel =
-                            ASN1Integer.getInstance(tagged.baseObject.toASN1Primitive())
-                                .positiveValue
-                                .toInt()
-                    }
-                    AttestationConstants.TAG_BOOT_PATCHLEVEL -> {
-                        bootPatchLevel =
-                            ASN1Integer.getInstance(tagged.baseObject.toASN1Primitive())
-                                .positiveValue
-                                .toInt()
-                    }
+                    AttestationConstants.TAG_OS_VERSION ->
+                        osVersion = tagged.inner().positiveInt().toInt()
+                    AttestationConstants.TAG_OS_PATCHLEVEL ->
+                        osPatchLevel = tagged.inner().positiveInt().toInt()
+                    AttestationConstants.TAG_VENDOR_PATCHLEVEL ->
+                        vendorPatchLevel = tagged.inner().positiveInt().toInt()
+                    AttestationConstants.TAG_BOOT_PATCHLEVEL ->
+                        bootPatchLevel = tagged.inner().positiveInt().toInt()
                 }
             }
 
