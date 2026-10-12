@@ -114,6 +114,7 @@ object ConfigurationManager {
      */
     private fun loadTargetPackages(file: File) {
         if (!file.exists()) {
+            packageKeyboxes = emptyMap()
             SystemLogger.warning("Configuration file not found: ${file.absolutePath}")
             return
         }

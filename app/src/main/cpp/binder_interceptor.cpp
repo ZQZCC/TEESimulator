@@ -206,6 +206,9 @@ const char *getBinderReturnCommandName(uint32_t cmd) {
 // Original ioctl function pointer
 int (*g_original_ioctl)(int fd, int request, ...) = nullptr;
 
+// PID of the daemon that registers the Java interceptors.
+static std::atomic<pid_t> g_daemon_pid = -1;
+
 // Unique ID generator for transactions
 static std::atomic<uint64_t> g_transaction_id_counter = 0;
 
@@ -370,12 +373,13 @@ void inspectAndRewriteTransaction(binder_transaction_data *txn_data) {
         info.transaction_code = intercept::kBackdoorCode;
         info.target_binder = nullptr;
         hijack = true;
-    // Check 2: Spoof uid of KeyStore requests from the daemon to bypass permission check
+    // Check 2: Only the registered daemon keeps the root-to-system UID mapping.
     } else if (txn_data->sender_euid == 0) {
-        // The kernel driver fills sender_euid.
-        // libbinder.so trusts this value to populate IPCThreadState.
-        txn_data->sender_euid = 1000;
-        LOGV("[Hook] Spoofing UID for transaction: 0 -> %d", txn_data->sender_euid);
+        if (txn_data->sender_pid == g_daemon_pid.load()) {
+            // libbinder trusts sender_euid to populate IPCThreadState.
+            txn_data->sender_euid = 1000;
+            LOGV("[Hook] Spoofing UID for transaction: 0 -> %d", txn_data->sender_euid);
+        }
         hijack = false; // Never hijack to avoid recursion
     // Check 3: Normal interception based on registry of monitored binders
     } else {
@@ -558,6 +562,7 @@ status_t BinderInterceptor::handleRegister(const Parcel &data) {
 
     std::unique_lock lock(registry_mutex_);
     registry_[weak_target] = {weak_target, callback, std::move(transaction_codes)};
+    g_daemon_pid.store(IPCThreadState::self()->getCallingPid());
 
     LOGI("Interceptor registered for binder %p", target.get());
     return OK;
