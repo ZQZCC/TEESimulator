@@ -1,7 +1,6 @@
 package org.matrix.TEESimulator.config
 
 import android.content.pm.IPackageManager
-import android.os.Build
 import android.os.FileObserver
 import android.os.IBinder
 import android.os.ServiceManager
@@ -12,34 +11,20 @@ import org.matrix.TEESimulator.logging.SystemLogger
 import org.matrix.TEESimulator.pki.KeyBoxManager
 
 /**
- * Manages application configuration, including which packages to process, what operation mode to
- * use, and custom security patch levels. It uses a FileObserver to dynamically reload settings when
- * configuration files change.
+ * Manages patch target packages, keyboxes, and custom security patch levels. It uses a FileObserver
+ * to dynamically reload settings when configuration files change.
  */
 object ConfigurationManager {
-
-    /** Defines the processing mode for a given package. */
-    enum class Mode {
-        /** Automatically decide between GENERATE and PATCH based on TEE status. */
-        AUTO,
-        /** Patch the attestation of an existing certificate chain. */
-        PATCH,
-        /** Generate a new certificate chain from scratch. */
-        GENERATE,
-    }
 
     // --- Configuration Paths ---
     const val CONFIG_PATH = "/data/adb/tricky_store"
     private const val TARGET_PACKAGES_FILE = "target.txt"
-    private const val TEE_STATUS_FILE = "tee_status.txt"
     private const val PATCH_LEVEL_FILE = "security_patch.txt"
     private const val DEFAULT_KEYBOX_FILE = "keybox.xml"
     private val configRoot = File(CONFIG_PATH)
 
     // --- In-Memory Configuration State ---
-    @Volatile private var packageModes = mapOf<String, Mode>()
     @Volatile private var packageKeyboxes = mapOf<String, String>()
-    @Volatile private var isTeeBroken: Boolean? = null
     @Volatile private var globalCustomPatchLevel: CustomPatchLevel? = null
     @Volatile private var packagePatchLevels = mapOf<String, CustomPatchLevel>()
 
@@ -71,12 +56,11 @@ object ConfigurationManager {
         configRoot.mkdirs()
         SystemLogger.info("Configuration root is: ${configRoot.absolutePath}")
 
-        // First, ensure the package manager service is running, as the TEE check depends on it.
-        // This prevents a race condition on startup.
+        // Package resolution requires the package manager service to be ready.
         SystemLogger.info("Waiting for PackageManagerService to be ready...")
         if (getPackageManager() == null) {
             SystemLogger.error(
-                "PackageManagerService is not available. TEE check will likely fail."
+                "PackageManagerService is not available. Target package resolution will fail."
             )
         } else {
             SystemLogger.info("PackageManagerService is ready.")
@@ -85,7 +69,8 @@ object ConfigurationManager {
         // Initial load of all configuration files.
         loadTargetPackages(File(configRoot, TARGET_PACKAGES_FILE))
         loadPatchLevelConfig(File(configRoot, PATCH_LEVEL_FILE))
-        storeTeeStatus() // Check and store the current TEE status.
+        // Preserve the startup hardware probe used by the cached attestation baseline.
+        DeviceAttestationService.isTeeFunctional
 
         // Start watching for any subsequent file changes.
         ConfigObserver.startWatching()
@@ -104,34 +89,9 @@ object ConfigurationManager {
         return packages.firstNotNullOfOrNull { pkg -> packageKeyboxes[pkg] } ?: DEFAULT_KEYBOX_FILE
     }
 
-    /** Determines if the certificate for a given UID needs to be patched. */
-    fun shouldPatch(uid: Int): Boolean = getPackageModeForUid(uid) == Mode.PATCH
-
-    /** Determines if a new certificate needs to be generated for a given UID. */
-    fun shouldGenerate(uid: Int): Boolean = getPackageModeForUid(uid) == Mode.GENERATE
-
-    /** Determines if no operation is needed for a given UID. */
-    fun shouldSkipUid(uid: Int): Boolean = getPackageModeForUid(uid) == null
-
-    /** Resolves the operating mode for a given UID based on its packages and the TEE status. */
-    private fun getPackageModeForUid(uid: Int): Mode? {
-        val packages = getPackagesForUid(uid)
-        if (packages.isEmpty()) return null
-
-        // Lazily load TEE status if it hasn't been checked yet.
-        if (isTeeBroken == null) loadTeeStatus()
-
-        // Find the first configured mode for any of the UID's packages.
-        for (pkg in packages) {
-            when (packageModes[pkg]) {
-                Mode.GENERATE -> return Mode.GENERATE
-                Mode.PATCH -> return Mode.PATCH
-                Mode.AUTO -> return if (isTeeBroken == true) Mode.GENERATE else Mode.PATCH
-                null -> continue // No config for this package, check the next one.
-            }
-        }
-        return null // No configuration found for this UID.
-    }
+    /** Determines if the UID has no configured patch target package. */
+    fun shouldSkipUid(uid: Int): Boolean =
+        getPackagesForUid(uid).none { packageKeyboxes.containsKey(it) }
 
     /**
      * Retrieves the custom patch level configuration for a given UID. It first checks for a
@@ -150,8 +110,7 @@ object ConfigurationManager {
     }
 
     /**
-     * Loads and parses the `target.txt` file, which defines the processing mode and keybox file for
-     * each package.
+     * Loads and parses the `target.txt` file, which assigns a keybox to each patch target package.
      */
     private fun loadTargetPackages(file: File) {
         if (!file.exists()) {
@@ -159,7 +118,6 @@ object ConfigurationManager {
             return
         }
 
-        val newModes = mutableMapOf<String, Mode>()
         val newKeyboxes = mutableMapOf<String, String>()
         var currentKeybox = DEFAULT_KEYBOX_FILE
 
@@ -175,32 +133,20 @@ object ConfigurationManager {
                     return@forEach
                 }
 
-                when {
-                    // Suffix '!' means force GENERATE mode.
-                    trimmedLine.endsWith("!") -> {
-                        val pkg = trimmedLine.removeSuffix("!").trim()
-                        newModes[pkg] = Mode.GENERATE
-                        newKeyboxes[pkg] = currentKeybox
-                    }
-                    // Suffix '?' means force PATCH mode.
-                    trimmedLine.endsWith("?") -> {
-                        val pkg = trimmedLine.removeSuffix("?").trim()
-                        newModes[pkg] = Mode.PATCH
-                        newKeyboxes[pkg] = currentKeybox
-                    }
-                    // No suffix means AUTO mode.
-                    else -> {
-                        newModes[trimmedLine] = Mode.AUTO
-                        newKeyboxes[trimmedLine] = currentKeybox
-                    }
+                if (trimmedLine.endsWith("!")) {
+                    SystemLogger.warning(
+                        "Generation mode is unsupported. Remove '!' to enable patching: $trimmedLine"
+                    )
+                    return@forEach
                 }
+                val pkg = trimmedLine.removeSuffix("?").trim()
+                newKeyboxes[pkg] = currentKeybox
             }
 
-            // Atomically update the configuration maps.
-            packageModes = newModes
+            // Atomically replace the target/keybox map.
             packageKeyboxes = newKeyboxes
             uidToPackagesCache.clear() // Invalidate cache as package settings have changed.
-            SystemLogger.info("Successfully loaded ${newModes.size} package configurations.")
+            SystemLogger.info("Successfully loaded ${newKeyboxes.size} patch target packages.")
         } catch (e: Exception) {
             SystemLogger.error("Failed to load or parse ${file.name}", e)
         }
@@ -289,29 +235,6 @@ object ConfigurationManager {
         }
     }
 
-    /** Checks the device's TEE status and writes the result to a file for persistence. */
-    private fun storeTeeStatus() {
-        val statusFile = File(configRoot, TEE_STATUS_FILE)
-        isTeeBroken = !DeviceAttestationService.isTeeFunctional
-        try {
-            statusFile.writeText("tee_broken=$isTeeBroken")
-            SystemLogger.info("TEE status stored: isTeeBroken=$isTeeBroken")
-        } catch (e: Exception) {
-            SystemLogger.error("Failed to write TEE status to file.", e)
-        }
-    }
-
-    /** Loads the TEE status from the file. */
-    private fun loadTeeStatus() {
-        val statusFile = File(configRoot, TEE_STATUS_FILE)
-        isTeeBroken =
-            if (statusFile.exists()) {
-                statusFile.readText().trim() == "tee_broken=true"
-            } else {
-                null // Status is unknown.
-            }
-    }
-
     /**
      * A FileObserver that monitors the configuration directory for changes and triggers reloads of
      * the relevant settings.
@@ -321,10 +244,10 @@ object ConfigurationManager {
             path ?: return
             SystemLogger.info("Configuration file change detected: $path (event: $event)")
 
-            val file = if (event != DELETE) File(configRoot, path) else null
+            val file = File(configRoot, path)
             when (path) {
-                TARGET_PACKAGES_FILE -> loadTargetPackages(file!!)
-                PATCH_LEVEL_FILE -> loadPatchLevelConfig(file!!)
+                TARGET_PACKAGES_FILE -> loadTargetPackages(file)
+                PATCH_LEVEL_FILE -> loadPatchLevelConfig(file)
                 // Any change to an XML file is assumed to be a keybox.
                 // The cache in KeyBoxManager will handle reloading it on its next use.
                 else ->
@@ -333,12 +256,10 @@ object ConfigurationManager {
                             "Keybox file $path may have changed. It will be reloaded on next access."
                         )
                         KeyBoxManager.invalidateCache(path)
-                        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.R) {
-                            // Clear cached keys possibly containing old certificates
-                            org.matrix.TEESimulator.interception.keystore.shim
-                                .KeyMintSecurityLevelInterceptor
-                                .clearAllGeneratedKeys("updating $file")
-                        }
+                        // Clear cached keys possibly containing old certificates.
+                        org.matrix.TEESimulator.interception.keystore.shim
+                            .KeyMintSecurityLevelInterceptor
+                            .clearAllGeneratedKeys("updating $file")
                     }
             }
         }
@@ -360,7 +281,7 @@ object ConfigurationManager {
     fun getPackageManager(): IPackageManager? {
         if (iPackageManager == null) {
             // Use a robust method to get the service binder.
-            val binder = waitForSystemService("package") ?: return null
+            val binder = ServiceManager.waitForService("package") ?: return null
             binder.linkToDeath(pmDeathRecipient, 0)
             iPackageManager = IPackageManager.Stub.asInterface(binder)
         }
@@ -377,21 +298,6 @@ object ConfigurationManager {
                 emptyArray()
             }
         }
-    }
-
-    /** Waits for a system service to become available, with retries. */
-    private fun waitForSystemService(name: String): IBinder? {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            return ServiceManager.waitForService(name)
-        }
-        // Fallback for older Android versions.
-        repeat(70) {
-            val service = ServiceManager.getService(name)
-            if (service != null) return service
-            Thread.sleep(500)
-        }
-        SystemLogger.error("Failed to get system service after multiple retries: $name")
-        return null
     }
 }
 

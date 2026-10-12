@@ -1,18 +1,11 @@
-# TEESimulator – A Full TEE Emulation Framework
+# TEESimulator – Patch Mode for Android 12+
 
-**TEESimulator** is a system module designed to create a complete, software-based simulation of a hardware-backed Trusted Execution Environment ([TEE](https://source.android.com/docs/security/features/trusty)) for [Key Attestation](https://developer.android.com/privacy-and-security/security-key-attestation).
+The `my` branch of **TEESimulator** keeps the existing [Key Attestation](https://developer.android.com/privacy-and-security/security-key-attestation) patch path and supports Android 12 or above.
 
-The project's goal is to move beyond simple certificate patching and build a robust framework that can create and manage virtual, self-consistent cryptographic keys.
-
-## ✨ Core Principles
-
-*   **Bypass Hardware-Backed Attestation:** The primary goal of this project is to defeat Key Attestation, a security mechanism that allows apps to verify that they are running on a secure, unmodified device. This module provides the tools to bypass these checks on rooted or modified devices.
-*   **Stateful Emulation:** Instead of patching responses from the real TEE, the ultimate goal is to create and manage virtual keys entirely in a simulated software environment. Any request concerning a virtual key will be handled by the simulator, ensuring perfect consistency without ever touching the real hardware.
-*   **Architectural Interception:** By hooking low-level Binder IPC calls to the Keystore, the framework can transparently redirect requests for virtual keys to the software-based simulator, while allowing requests for real keys to pass through to the hardware TEE.
-*   **100% FOSS:** Licensed under GPLv3, ensuring it stays free, auditable, and compliant with open-source laws.
+Ordinary keys are created by the device's real TEE or StrongBox. The module patches their attestation certificate chains and keeps subsequent reads consistent with the generation response. App attestation keys and keys signed by them retain the existing software support, including key operations, listing, deletion, metadata updates, and grants.
 
 ## 📱 Requirements
-- Android 10 or above
+- Android 12 or above with a functioning hardware TEE
 
 ## 📦 Installation & Configuration
 
@@ -40,16 +33,9 @@ This file provides the master cryptographic identity for the simulator. It conta
 </AndroidAttestation>
 ```
 
-### Mode and Keybox Configuration (`target.txt`)
+### Patch Targets and Keyboxes (`target.txt`)
 
-TEESimulator currently operates in two primary modes as it transitions towards full emulation.
-You can control the simulation mode and the specific keybox.xml file used on a per-package basis.
-
-#### Mode Suffixes
-
-*   **`!` → Force Generation Mode:** Creates a complete, software-based virtual key. This is the foundation of the full TEE simulation.
-*   **`?` → Force Leaf Hacking Mode:** A legacy mode where a real TEE key is generated, but its attestation certificate is intercepted and modified.
-*   **No symbol → Automatic Mode:** The module selects the most appropriate mode for the device.
+Every listed package uses patch mode. Bare package names and the existing `?` patch suffix are accepted. The former `!` generation suffix is unsupported: those entries are skipped with a warning; remove `!` to select patch mode. AUTO/GENERATE mode selection and `tee_status.txt` are no longer used.
 
 #### Multi-Keybox Configuration
 
@@ -60,7 +46,7 @@ All applications listed after this line will use the specified keybox file, unti
 For example:
 ```
 # These two apps will use the default /data/adb/tricky_store/keybox.xml
-com.google.android.gms!
+com.google.android.gms
 io.github.vvb2060.keyattestation?
 
 # Switch to a different keybox for the following apps.

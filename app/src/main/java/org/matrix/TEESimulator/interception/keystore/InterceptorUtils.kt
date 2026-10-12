@@ -2,8 +2,6 @@ package org.matrix.TEESimulator.interception.keystore
 
 import android.os.Parcel
 import android.os.Parcelable
-import android.security.KeyStore
-import android.security.keystore.KeystoreResponse
 import org.matrix.TEESimulator.interception.core.BinderInterceptor
 import org.matrix.TEESimulator.logging.SystemLogger
 
@@ -47,40 +45,9 @@ object InterceptorUtils {
         }
     }
 
-    /** Creates an `KeystoreResponse` parcel that indicates success with no data. */
-    fun createSuccessKeystoreResponse(): KeystoreResponse {
-        val parcel = Parcel.obtain()
-        try {
-            parcel.writeInt(KeyStore.NO_ERROR)
-            parcel.writeString("")
-            parcel.setDataPosition(0)
-            return KeystoreResponse.CREATOR.createFromParcel(parcel)
-        } finally {
-            parcel.recycle()
-        }
-    }
-
     /** Creates an `OverrideReply` parcel that indicates success with no data. */
-    fun createSuccessReply(
-        writeResultCode: Boolean = true
-    ): BinderInterceptor.TransactionResult.OverrideReply {
-        val parcel =
-            Parcel.obtain().apply {
-                writeNoException()
-                if (writeResultCode) {
-                    writeInt(KeyStore.NO_ERROR)
-                }
-            }
-        return BinderInterceptor.TransactionResult.OverrideReply(parcel)
-    }
-
-    /** Creates an `OverrideReply` parcel containing a raw byte array. */
-    fun createByteArrayReply(data: ByteArray): BinderInterceptor.TransactionResult.OverrideReply {
-        val parcel =
-            Parcel.obtain().apply {
-                writeNoException()
-                writeByteArray(data)
-            }
+    fun createSuccessReply(): BinderInterceptor.TransactionResult.OverrideReply {
+        val parcel = Parcel.obtain().apply { writeNoException() }
         return BinderInterceptor.TransactionResult.OverrideReply(parcel)
     }
 
@@ -108,21 +75,6 @@ object InterceptorUtils {
                 writeTypedObject(obj, flags)
             }
         return BinderInterceptor.TransactionResult.OverrideReply(parcel)
-    }
-
-    /**
-     * Extracts the base alias from a potentially prefixed alias string. For example, it converts
-     * "USRCERT_my_key" to "my_key".
-     */
-    fun extractAlias(prefixedAlias: String): String {
-        val underscoreIndex = prefixedAlias.indexOf('_')
-        return if (underscoreIndex != -1) {
-            // Return the part of the string after the first underscore.
-            prefixedAlias.substring(underscoreIndex + 1)
-        } else {
-            // If there's no underscore, return the original string.
-            prefixedAlias
-        }
     }
 
     /** Checks if a reply parcel contains an exception without consuming it. */

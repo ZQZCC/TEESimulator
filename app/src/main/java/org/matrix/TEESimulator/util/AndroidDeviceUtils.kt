@@ -315,8 +315,6 @@ object AndroidDeviceUtils {
             Build.VERSION_CODES.TIRAMISU to 130000,
             Build.VERSION_CODES.S_V2 to 120100,
             Build.VERSION_CODES.S to 120000,
-            Build.VERSION_CODES.R to 110000,
-            Build.VERSION_CODES.Q to 100000,
         )
 
     val osVersion: Int
@@ -327,8 +325,6 @@ object AndroidDeviceUtils {
 
     private val attestVersionMap =
         mapOf(
-            Build.VERSION_CODES.Q to 4, // Keymaster 4.1
-            Build.VERSION_CODES.R to 4, // Keymaster 4.1
             Build.VERSION_CODES.S to 100, // KeyMint 1.0
             Build.VERSION_CODES.S_V2 to 100, // KeyMint 1.0
             Build.VERSION_CODES.TIRAMISU to 200, // KeyMint 2.0

@@ -7,6 +7,7 @@
 #include <sys/ioctl.h>
 #include <utils/StrongPointer.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cinttypes>
 #include <map>
@@ -16,6 +17,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "logging.hpp"
 #include "lsplt.hpp"
@@ -127,7 +129,6 @@ namespace intercept {
 
 // Interceptor protocol codes (User space agreement between App and Interceptor Service)
 constexpr uint32_t kRegisterInterceptor = 1;
-constexpr uint32_t kUnregisterInterceptor = 2;
 
 constexpr uint32_t kPreTransact = 1;
 constexpr uint32_t kPostTransact = 2;
@@ -235,6 +236,7 @@ class BinderInterceptor : public BBinder {
     struct RegistrationEntry {
         wp<IBinder> target;
         sp<IBinder> callback_interface;
+        std::vector<uint32_t> transaction_codes;
     };
 
     // Reader-Writer lock for the registry to allow concurrent reads (lookups)
@@ -244,10 +246,14 @@ class BinderInterceptor : public BBinder {
 public:
     BinderInterceptor() = default;
 
-    // Checks if a specific Binder instance is currently registered for interception
-    bool isBinderIntercepted(const wp<BBinder> &target) const {
+    // Only registered method codes are redirected to the callback.
+    bool isBinderIntercepted(const wp<BBinder> &target, uint32_t code) const {
         std::shared_lock lock(registry_mutex_);
-        return registry_.find(target) != registry_.end();
+        auto it = registry_.find(target);
+        if (it == registry_.end())
+            return false;
+        const auto &codes = it->second.transaction_codes;
+        return std::find(codes.begin(), codes.end(), code) != codes.end();
     }
 
     // Main entry point for processing the "Man-in-the-Middle" logic
@@ -260,7 +266,6 @@ protected:
 
 private:
     status_t handleRegister(const Parcel &data);
-    status_t handleUnregister(const Parcel &data);
 
     // Helpers to serialize data for the remote callback interface
     status_t writeTransactionData(Parcel &out, uint64_t tx_id, sp<BBinder> target, uint32_t code, uint32_t flags,
@@ -386,7 +391,7 @@ void inspectAndRewriteTransaction(binder_transaction_data *txn_data) {
             // This is safe because we are holding a strong reference.
             wp<BBinder> wp_target = target_binder_ptr;
 
-            if (g_interceptor_instance->isBinderIntercepted(wp_target)) {
+            if (g_interceptor_instance->isBinderIntercepted(wp_target, txn_data->code)) {
                 info.transaction_code = txn_data->code;
                 info.target_binder = wp_target; // Assign the valid weak pointer
                 hijack = true;
@@ -515,8 +520,6 @@ status_t BinderInterceptor::onTransact(uint32_t code, const Parcel &data, Parcel
     switch (code) {
     case intercept::kRegisterInterceptor:
         return handleRegister(data);
-    case intercept::kUnregisterInterceptor:
-        return handleUnregister(data);
     default:
         return BBinder::onTransact(code, data, reply, flags);
     }
@@ -531,6 +534,20 @@ status_t BinderInterceptor::handleRegister(const Parcel &data) {
     if (data.readStrongBinder(&callback) != OK || !callback)
         return BAD_VALUE;
 
+    int32_t code_count;
+    if (data.readInt32(&code_count) != OK || code_count <= 0 ||
+        static_cast<size_t>(code_count) > data.dataAvail() / sizeof(uint32_t))
+        return BAD_VALUE;
+
+    std::vector<uint32_t> transaction_codes;
+    transaction_codes.reserve(code_count);
+    for (int32_t i = 0; i < code_count; ++i) {
+        uint32_t transaction_code;
+        if (data.readUint32(&transaction_code) != OK)
+            return BAD_VALUE;
+        transaction_codes.push_back(transaction_code);
+    }
+
     // We can only intercept local Binders (BBinder), not remote proxies (BpBinder)
     if (target->localBinder() == nullptr) {
         LOGE("Cannot intercept remote binder proxies.");
@@ -540,26 +557,10 @@ status_t BinderInterceptor::handleRegister(const Parcel &data) {
     wp<IBinder> weak_target = target;
 
     std::unique_lock lock(registry_mutex_);
-    registry_[weak_target] = {weak_target, callback};
+    registry_[weak_target] = {weak_target, callback, std::move(transaction_codes)};
 
     LOGI("Interceptor registered for binder %p", target.get());
     return OK;
-}
-
-status_t BinderInterceptor::handleUnregister(const Parcel &data) {
-    sp<IBinder> target;
-    if (data.readStrongBinder(&target) != OK || !target)
-        return BAD_VALUE;
-
-    wp<IBinder> weak_target = target;
-
-    std::unique_lock lock(registry_mutex_);
-    if (registry_.erase(weak_target) > 0) {
-        LOGI("Interceptor unregistered for binder %p", target.get());
-        return OK;
-    }
-    LOGW("Attempted to unregister a non-existent interceptor for binder %p", target.get());
-    return NAME_NOT_FOUND;
 }
 
 status_t BinderInterceptor::writeTransactionData(Parcel &out, uint64_t tx_id, sp<BBinder> target, uint32_t code,

@@ -32,6 +32,14 @@ class KeyMintSecurityLevelInterceptor(
     private val securityLevel: Int,
 ) : BinderInterceptor() {
 
+    override val transactionCodes: IntArray
+        get() =
+            intArrayOf(
+                GENERATE_KEY_TRANSACTION,
+                CREATE_OPERATION_TRANSACTION,
+                IMPORT_KEY_TRANSACTION,
+            )
+
     // --- Data Structures for State Management ---
     data class GeneratedKeyInfo(
         val keyPair: KeyPair,
@@ -107,41 +115,6 @@ class KeyMintSecurityLevelInterceptor(
                 data.readTypedObject(KeyDescriptor.CREATOR)
                     ?: return TransactionResult.SkipTransaction
             cleanupKeyData(KeyIdentifier(callingUid, keyDescriptor.alias))
-        } else if (code == CREATE_OPERATION_TRANSACTION) {
-            logTransaction(txId, "post-${transactionNames[code]!!}", callingUid, callingPid)
-
-            data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
-            val keyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)!!
-            val params = data.createTypedArray(KeyParameter.CREATOR)!!
-            val parsedParams = KeyMintAttestation(params)
-            val forced = data.readBoolean()
-            if (forced)
-                SystemLogger.verbose(
-                    "[TX_ID: $txId] Current operation has a very high pruning power."
-                )
-            val response: CreateOperationResponse =
-                reply.readTypedObject(CreateOperationResponse.CREATOR)!!
-            SystemLogger.verbose(
-                "[TX_ID: $txId] CreateOperationResponse: ${response.iOperation} ${response.operationChallenge}"
-            )
-
-            // Intercept the IKeystoreOperation binder
-            response.iOperation?.let { operation ->
-                val operationBinder = operation.asBinder()
-                if (!interceptedOperations.containsKey(operationBinder)) {
-                    SystemLogger.info("Found new IKeystoreOperation. Registering interceptor...")
-                    val backdoor = getBackdoor(target)
-                    if (backdoor != null) {
-                        val interceptor = OperationInterceptor(operation, backdoor)
-                        register(backdoor, operationBinder, interceptor)
-                        interceptedOperations[operationBinder] = interceptor
-                    } else {
-                        SystemLogger.error(
-                            "Failed to get backdoor to register OperationInterceptor."
-                        )
-                    }
-                }
-            }
         } else if (code == GENERATE_KEY_TRANSACTION) {
             logTransaction(txId, "post-${transactionNames[code]!!}", callingUid, callingPid)
 
@@ -218,7 +191,7 @@ class KeyMintSecurityLevelInterceptor(
             SystemLogger.debug(
                 "[TX_ID: $txId] Operation for unknown/hardware KeyId ($nspace). Forwarding."
             )
-            return TransactionResult.Continue
+            return TransactionResult.ContinueAndSkipPost
         }
 
         SystemLogger.info("[TX_ID: $txId] Creating SOFTWARE operation for KeyId $nspace.")
@@ -239,8 +212,8 @@ class KeyMintSecurityLevelInterceptor(
     }
 
     /**
-     * Handles the `generateKey` transaction. Based on the configuration for the calling UID, it
-     * either generates a key in software or lets the call pass through to the hardware.
+     * Handles the `generateKey` transaction for patch targets. Ordinary keys use the hardware;
+     * app attestation keys and keys signed by them retain the existing software path.
      */
     private fun handleGenerateKey(callingUid: Int, data: Parcel): TransactionResult {
         return runCatching {
@@ -255,12 +228,7 @@ class KeyMintSecurityLevelInterceptor(
                 val isAttestKeyRequest = parsedParams.isAttestKey()
                 val keyId = KeyIdentifier(callingUid, keyDescriptor.alias)
 
-                // Determine if we need to generate a key based on config or
-                // if it's an attestation request in patch mode.
-                val needsSoftwareGeneration =
-                    ConfigurationManager.shouldGenerate(callingUid) ||
-                        (ConfigurationManager.shouldPatch(callingUid) && isAttestKeyRequest) ||
-                        attestationKey != null
+                val needsSoftwareGeneration = isAttestKeyRequest || attestationKey != null
 
                 if (needsSoftwareGeneration) {
                     keyDescriptor.nspace = secureRandom.nextLong()
@@ -371,8 +339,6 @@ class KeyMintSecurityLevelInterceptor(
         val attestationKeys = ConcurrentHashMap.newKeySet<KeyIdentifier>()
         // Caches patched certificate chains to prevent re-generation and signature inconsistencies.
         val patchedChains = ConcurrentHashMap<KeyIdentifier, Array<Certificate>>()
-        // Stores interceptors for active cryptographic operations.
-        private val interceptedOperations = ConcurrentHashMap<IBinder, OperationInterceptor>()
 
         data class SoftwareGrant(
             val ownerKeyId: KeyIdentifier,
@@ -477,15 +443,6 @@ class KeyMintSecurityLevelInterceptor(
             }
             if (attestationKeys.remove(keyId)) {
                 SystemLogger.debug("Remove cached attestaion key ${keyId}")
-            }
-        }
-
-        fun removeOperationInterceptor(operationBinder: IBinder, backdoor: IBinder) {
-            // Unregister from the native hook layer first.
-            unregister(backdoor, operationBinder)
-
-            if (interceptedOperations.remove(operationBinder) != null) {
-                SystemLogger.debug("Removed operation interceptor for binder: $operationBinder")
             }
         }
 

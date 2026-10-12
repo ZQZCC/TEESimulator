@@ -47,6 +47,19 @@ object Keystore2Interceptor : AbstractKeystoreInterceptor() {
     private val GRANT_TRANSACTION = InterceptorUtils.getTransactCode(stubBinderClass, "grant")
     private val UNGRANT_TRANSACTION = InterceptorUtils.getTransactCode(stubBinderClass, "ungrant")
 
+    override val transactionCodes: IntArray
+        get() =
+            listOfNotNull(
+                    GET_KEY_ENTRY_TRANSACTION,
+                    DELETE_KEY_TRANSACTION,
+                    UPDATE_SUBCOMPONENT_TRANSACTION,
+                    LIST_ENTRIES_TRANSACTION,
+                    LIST_ENTRIES_BATCHED_TRANSACTION,
+                    GRANT_TRANSACTION,
+                    UNGRANT_TRANSACTION,
+                )
+                .toIntArray()
+
     private val transactionNames: Map<Int, String> by lazy {
         stubBinderClass.declaredFields
             .filter {
@@ -183,7 +196,7 @@ object Keystore2Interceptor : AbstractKeystoreInterceptor() {
                         SystemLogger.info(
                             "[TX_ID: $txId] Deleted cached keypair ${keyId.alias} via KEY_ID, replying with empty response."
                         )
-                        return InterceptorUtils.createSuccessReply(writeResultCode = false)
+                        return InterceptorUtils.createSuccessReply()
                     }
                     KeyMintSecurityLevelInterceptor.evictTeeResponseByKeyId(
                         callingUid,
@@ -227,7 +240,7 @@ object Keystore2Interceptor : AbstractKeystoreInterceptor() {
                     SystemLogger.info(
                         "[TX_ID: $txId] Deleted cached keypair ${descriptor.alias}, replying with empty response."
                     )
-                    return InterceptorUtils.createSuccessReply(writeResultCode = false)
+                    return InterceptorUtils.createSuccessReply()
                 }
                 KeyMintSecurityLevelInterceptor.evictTeeResponse(keyId)
                 return TransactionResult.ContinueAndSkipPost
@@ -289,7 +302,7 @@ object Keystore2Interceptor : AbstractKeystoreInterceptor() {
             }
 
             KeyMintSecurityLevelInterceptor.revokeGrant(ownerKeyId, granteeUid)
-            return InterceptorUtils.createSuccessReply(writeResultCode = false)
+            return InterceptorUtils.createSuccessReply()
         } else {
             logTransaction(
                 txId,
@@ -537,6 +550,6 @@ object Keystore2Interceptor : AbstractKeystoreInterceptor() {
             "Key updated with sizes: [publicCert, certificateChain] = [${publicCert?.size}, ${certificateChain?.size}]"
         )
 
-        return InterceptorUtils.createSuccessReply(writeResultCode = false)
+        return InterceptorUtils.createSuccessReply()
     }
 }

@@ -9,7 +9,7 @@ android {
   buildToolsVersion = "36.0.0"
   // This module is Java-only, so skip AGP's built-in Kotlin compilation and stdlib.
   enableKotlin = false
-  defaultConfig { minSdk = 29 }
+  defaultConfig { minSdk = 31 }
 
   buildTypes { release { isMinifyEnabled = false } }
 

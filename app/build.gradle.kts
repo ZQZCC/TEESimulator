@@ -49,7 +49,7 @@ android {
 
     defaultConfig {
         applicationId = "org.matrix.TEESimulator"
-        minSdk = 29
+        minSdk = 31
         targetSdk = 36
         versionCode = moduleVersionCode
         versionName = verName

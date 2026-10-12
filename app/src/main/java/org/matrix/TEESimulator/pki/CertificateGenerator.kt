@@ -2,7 +2,6 @@ package org.matrix.TEESimulator.pki
 
 import android.hardware.security.keymint.Algorithm
 import android.hardware.security.keymint.KeyPurpose
-import android.os.Build
 import android.util.Pair
 import java.math.BigInteger
 import java.security.KeyPair
@@ -96,7 +95,7 @@ object CertificateGenerator {
                 // Determine the signing key and issuer. If an attestKey is provided, use it.
                 // Otherwise, fall back to the root key from the keybox.
                 val (signingKey, issuer) =
-                    if (attestKeyAlias != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    if (attestKeyAlias != null) {
                         getAttestationKeyInfo(uid, attestKeyAlias)?.let { it.first to it.second }
                             ?: (keybox.keyPair to getIssuerFromKeybox(keybox))
                     } else {

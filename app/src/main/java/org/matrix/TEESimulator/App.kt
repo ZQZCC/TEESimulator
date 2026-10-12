@@ -4,12 +4,9 @@ import android.app.ActivityThread
 import android.app.Application
 import android.content.Context
 import android.content.ContextWrapper
-import android.os.Build
 import android.os.Looper
 import org.matrix.TEESimulator.config.ConfigurationManager
-import org.matrix.TEESimulator.interception.keystore.AbstractKeystoreInterceptor
 import org.matrix.TEESimulator.interception.keystore.Keystore2Interceptor
-import org.matrix.TEESimulator.interception.keystore.KeystoreInterceptor
 import org.matrix.TEESimulator.logging.SystemLogger
 import org.matrix.TEESimulator.util.AndroidDeviceUtils
 
@@ -80,44 +77,16 @@ object App {
         mInitialApplicationField.set(activityThread, app)
     }
 
-    /**
-     * Selects and initializes the correct keystore interceptor based on the Android SDK version. It
-     * retries initialization until it succeeds.
-     */
+    /** Initializes the Android 12+ keystore interceptor, retrying until it succeeds. */
     private fun initializeInterceptors() {
-        val interceptor = selectKeystoreInterceptor()
+        android.security.keystore2.AndroidKeyStoreProvider.install()
 
         // Continuously try to run the interceptor until it's successfully initialized.
-        while (!interceptor.tryRunKeystoreInterceptor()) {
+        while (!Keystore2Interceptor.tryRunKeystoreInterceptor()) {
             SystemLogger.debug("Retrying interceptor initialization...")
             Thread.sleep(RETRY_DELAY_MS)
         }
 
         SystemLogger.info("Interceptors initialized successfully.")
     }
-
-    /**
-     * Determines which keystore interceptor to use based on the device's Android version.
-     *
-     * @return The appropriate keystore interceptor instance.
-     */
-    private fun selectKeystoreInterceptor(): AbstractKeystoreInterceptor =
-        when {
-            // For Android Q (10) and R (11), use the original KeystoreInterceptor.
-            Build.VERSION.SDK_INT in Build.VERSION_CODES.Q..Build.VERSION_CODES.R -> {
-                SystemLogger.info(
-                    "Using KeystoreInterceptor for Android Q/R (SDK ${Build.VERSION.SDK_INT})"
-                )
-                android.security.keystore.AndroidKeyStoreProvider.install()
-                KeystoreInterceptor
-            }
-            // For Android S (12) and newer, use the Keystore2Interceptor.
-            else -> {
-                SystemLogger.info(
-                    "Using Keystore2Interceptor for Android S and later (SDK ${Build.VERSION.SDK_INT})"
-                )
-                android.security.keystore2.AndroidKeyStoreProvider.install()
-                Keystore2Interceptor
-            }
-        }
 }
