@@ -17,6 +17,7 @@
 #pragma once
 
 #include <array>
+#include <iosfwd>
 #include <limits>
 #include <map> // for legacy reasons
 #include <optional>

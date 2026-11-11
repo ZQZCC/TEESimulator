@@ -17,7 +17,6 @@
 #ifndef ANDROID_STRING16_H
 #define ANDROID_STRING16_H
 
-#include <iostream>
 #include <string>
 #include <string_view>
 
@@ -204,11 +203,6 @@ private:
 // String16 can be trivially moved using memcpy() because moving does not
 // require any change to the underlying SharedBuffer contents or reference count.
 ANDROID_TRIVIAL_MOVE_TRAIT(String16)
-
-static inline std::ostream& operator<<(std::ostream& os, const String16& str) {
-    os << String8(str);
-    return os;
-}
 
 // ---------------------------------------------------------------------------
 

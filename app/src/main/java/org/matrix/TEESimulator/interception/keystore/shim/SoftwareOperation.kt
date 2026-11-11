@@ -11,6 +11,7 @@ import java.security.KeyPair
 import java.security.Signature
 import java.security.SignatureException
 import javax.crypto.Cipher
+import org.matrix.TEESimulator.BuildConfig
 import org.matrix.TEESimulator.attestation.KeyMintAttestation
 import org.matrix.TEESimulator.logging.KeyMintParameterLogger
 import org.matrix.TEESimulator.logging.SystemLogger
@@ -154,8 +155,10 @@ class SoftwareOperation(private val txId: Long, keyPair: KeyPair, params: KeyMin
         // The "Strategy" pattern: choose the implementation based on the purpose.
         // For simplicity, we only consider the first purpose listed.
         val purpose = params.purpose.firstOrNull()
-        val purposeName = KeyMintParameterLogger.purposeNames[purpose] ?: "UNKNOWN"
-        SystemLogger.debug("[SoftwareOp TX_ID: $txId] Initializing for purpose: $purposeName.")
+        if (BuildConfig.DEBUG) {
+            val purposeName = KeyMintParameterLogger.purposeNames[purpose] ?: "UNKNOWN"
+            SystemLogger.debug("[SoftwareOp TX_ID: $txId] Initializing for purpose: $purposeName.")
+        }
 
         primitive =
             when (purpose) {

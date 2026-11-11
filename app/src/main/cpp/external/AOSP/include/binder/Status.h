@@ -18,8 +18,6 @@
 #define ANDROID_BINDER_STATUS_H
 
 #include <cstdint>
-#include <sstream> // historical
-#include <ostream>
 
 #include <binder/Common.h>
 #include <binder/Parcel.h>
@@ -166,10 +164,6 @@ private:
     int32_t mErrorCode = 0;
     String8 mMessage;
 };  // class Status
-
-static inline std::ostream& operator<< (std::ostream& o, const Status& s) {
-    return o << s.toString8();
-}
 
 }  // namespace binder
 }  // namespace android

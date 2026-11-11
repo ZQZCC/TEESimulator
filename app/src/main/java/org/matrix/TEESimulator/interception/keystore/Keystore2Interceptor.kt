@@ -11,6 +11,7 @@ import android.system.keystore2.KeyDescriptor
 import android.system.keystore2.KeyEntryResponse
 import java.security.SecureRandom
 import java.security.cert.Certificate
+import org.matrix.TEESimulator.BuildConfig
 import org.matrix.TEESimulator.attestation.AttestationPatcher
 import org.matrix.TEESimulator.attestation.KeyMintAttestation
 import org.matrix.TEESimulator.config.ConfigurationManager
@@ -250,12 +251,14 @@ object Keystore2Interceptor : AbstractKeystoreInterceptor() {
                 KeyMintSecurityLevelInterceptor.getGeneratedKeyResponse(keyId)
                     ?: return TransactionResult.Continue
 
-            if (KeyMintSecurityLevelInterceptor.isAttestationKey(keyId))
-                SystemLogger.info("${descriptor.alias} was an attestation key")
+            if (BuildConfig.DEBUG) {
+                if (KeyMintSecurityLevelInterceptor.isAttestationKey(keyId))
+                    SystemLogger.info("${descriptor.alias} was an attestation key")
 
-            SystemLogger.info("[TX_ID: $txId] Found generated response for ${descriptor.alias}:")
-            response.metadata?.authorizations?.forEach {
-                KeyMintParameterLogger.logParameter(it.keyParameter)
+                SystemLogger.info("[TX_ID: $txId] Found generated response for ${descriptor.alias}:")
+                response.metadata?.authorizations?.forEach {
+                    KeyMintParameterLogger.logParameter(it.keyParameter)
+                }
             }
             return InterceptorUtils.createTypedObjectReply(response)
         } else if (code == GRANT_TRANSACTION) {

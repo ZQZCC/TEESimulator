@@ -22,7 +22,7 @@
 
 #include <stdint.h>
 #include <string.h>
-#include <sstream>
+#include <iosfwd>
 
 // ---------------------------------------------------------------------------
 namespace android {
@@ -70,16 +70,6 @@ TextOutput& endl(TextOutput& to);
 TextOutput& indent(TextOutput& to);
 TextOutput& dedent(TextOutput& to);
 
-template<typename T>
-TextOutput& operator<<(TextOutput& to, const T& val)
-{
-    std::stringstream strbuf;
-    strbuf << val;
-    std::string str = strbuf.str();
-    to.print(str.c_str(), str.size());
-    return to;
-}
-
 LIBBINDER_EXPORTED TextOutput& operator<<(TextOutput& to, TextOutputManipFunc func);
 
 class LIBBINDER_EXPORTED TypeCode {
@@ -122,14 +112,6 @@ private:
 };
 
 LIBBINDER_EXPORTED std::ostream& operator<<(std::ostream& to, const HexDump& val);
-inline TextOutput& operator<<(TextOutput& to,
-                              decltype(std::endl<char,
-                                       std::char_traits<char>>)
-                              /*val*/) {
-    endl(to);
-    return to;
-}
-
 inline TextOutput& operator<<(TextOutput& to, const char &c)
 {
     to.print(&c, 1);
@@ -145,7 +127,8 @@ inline TextOutput& operator<<(TextOutput& to, const bool &val)
 
 inline TextOutput& operator<<(TextOutput& to, const String16& val)
 {
-    to << String8(val).c_str();
+    const String8 text(val);
+    to.print(text.c_str(), strlen(text.c_str()));
     return to;
 }
 

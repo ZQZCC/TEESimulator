@@ -1,5 +1,3 @@
--keep class org.matrix.TEESimulator.interception.keystore.** { *; }
-
 -dontwarn javax.naming.**
 
 -keepclasseswithmembers class org.matrix.TEESimulator.App {

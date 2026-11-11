@@ -43,9 +43,9 @@ val targetAbis =
 
 android {
     namespace = "org.matrix.TEESimulator"
-    compileSdk = 36
-    ndkVersion = "29.0.14206865"
-    buildToolsVersion = "36.0.0"
+    compileSdk = 37
+    ndkVersion = "30.0.16248370"
+    buildToolsVersion = "37.0.0"
 
     defaultConfig {
         applicationId = "org.matrix.TEESimulator"

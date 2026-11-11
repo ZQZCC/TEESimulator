@@ -3,6 +3,7 @@ package org.matrix.TEESimulator.attestation
 import android.hardware.security.keymint.*
 import java.math.BigInteger
 import java.util.Date
+import org.matrix.TEESimulator.BuildConfig
 import org.matrix.TEESimulator.logging.KeyMintParameterLogger
 
 /**
@@ -104,7 +105,9 @@ data class KeyMintAttestation(
         secondImei = params.findBlob(Tag.ATTESTATION_ID_SECOND_IMEI),
     ) {
         // Log all parsed parameters for debugging purposes.
-        params.forEach { KeyMintParameterLogger.logParameter(it) }
+        if (BuildConfig.DEBUG) {
+            params.forEach { KeyMintParameterLogger.logParameter(it) }
+        }
     }
 
     fun isAttestKey(): Boolean {

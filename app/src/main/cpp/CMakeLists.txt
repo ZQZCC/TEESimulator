@@ -20,6 +20,8 @@ endforeach()
 # LSPlt configuration
 OPTION(LSPLT_BUILD_SHARED OFF)
 add_subdirectory(external/LSPlt/lsplt/src/main/jni)
+# The pinned LSPlt source calls free() without including <cstdlib>.
+target_compile_options(lsplt_static PRIVATE -include cstdlib)
 
 add_compile_definitions(BINDER_DISABLE_NATIVE_HANDLE)
 add_library(utils SHARED stub/stub_utils.cpp)
@@ -38,4 +40,12 @@ target_include_directories(${CMAKE_PROJECT_NAME} PUBLIC external/linux-kernel/in
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE binder lsplt_static utils)
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES
         LINK_FLAGS "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports.map")
+
+if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(metadata_script "${CMAKE_CURRENT_SOURCE_DIR}/metadata.ld")
+    foreach(target libinject.so ${CMAKE_PROJECT_NAME})
+        target_link_options(${target} PRIVATE "LINKER:--script=${metadata_script}")
+        set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS "${metadata_script}")
+    endforeach()
+endif()
 

@@ -5,8 +5,8 @@ plugins {
 
 android {
   namespace = "org.matrix.stub"
-  compileSdk = 36
-  buildToolsVersion = "36.0.0"
+  compileSdk = 37
+  buildToolsVersion = "37.0.0"
   // This module is Java-only, so skip AGP's built-in Kotlin compilation and stdlib.
   enableKotlin = false
   defaultConfig { minSdk = 31 }
